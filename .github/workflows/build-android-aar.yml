@@ -10,27 +10,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout your repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2️⃣ Clone AndroidLibXrayLite repository
       - name: Clone AndroidLibXrayLite
         run: git clone https://github.com/2dust/AndroidLibXrayLite.git
 
+      # 3️⃣ Set up Go
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
           go-version: "1.21"
 
+      # 4️⃣ Install gomobile
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Download Android NDK
-        uses: android-actions/setup-ndk@v2
-        with:
-          ndk-version: "25.2.9519653"
+      # 5️⃣ Install Android SDK & NDK manually
+      - name: Install Android SDK & NDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip wget
+          wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
+          mkdir -p $HOME/android/cmdline-tools
+          unzip cmdline-tools.zip -d $HOME/android/cmdline-tools
+          yes | $HOME/android/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android "ndk;25.2.9519653" "platforms;android-21"
+          echo "export ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
+          echo "export PATH=$PATH:$HOME/android/cmdline-tools/cmdline-tools/bin" >> $GITHUB_ENV
 
+      # 6️⃣ Build the AAR
       - name: Build AAR
         run: |
           cd AndroidLibXrayLite
@@ -39,8 +51,9 @@ jobs:
           # ./scripts/gen_assets.sh
           gomobile bind -v -target=android -androidapi=21 -o ../libv2ray.aar .
 
+      # 7️⃣ Upload the built AAR as artifact
       - name: Upload AAR Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: libv2ray.aar
           path: libv2ray.aar
