@@ -1,34 +1,46 @@
-- name: Checkout repository
-  uses: actions/checkout@v3
+name: Build AndroidLibXrayLite AAR
 
-- name: Clone AndroidLibXrayLite
-  run: git clone https://github.com/2dust/AndroidLibXrayLite.git
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
-- name: Set up Go
-  uses: actions/setup-go@v4
-  with:
-    go-version: "1.21"
+jobs:
+  build-aar:
+    runs-on: ubuntu-latest
 
-- name: Install gomobile
-  run: |
-    go install golang.org/x/mobile/cmd/gomobile@latest
-    gomobile init
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-- name: Download Android NDK
-  uses: android-actions/setup-ndk@v2
-  with:
-    ndk-version: "25.2.9519653"
+      - name: Clone AndroidLibXrayLite
+        run: git clone https://github.com/2dust/AndroidLibXrayLite.git
 
-- name: Build AAR
-  run: |
-    cd AndroidLibXrayLite
-    go mod tidy
-    # optional: generate geoip/geosite assets if required
-    # ./scripts/gen_assets.sh
-    gomobile bind -v -target=android -androidapi=21 -o ../libv2ray.aar .
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
 
-- name: Upload AAR Artifact
-  uses: actions/upload-artifact@v3
-  with:
-    name: libv2ray.aar
-    path: libv2ray.aar
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+
+      - name: Download Android NDK
+        uses: android-actions/setup-ndk@v2
+        with:
+          ndk-version: "25.2.9519653"
+
+      - name: Build AAR
+        run: |
+          cd AndroidLibXrayLite
+          go mod tidy
+          # optional: generate geoip/geosite assets if required
+          # ./scripts/gen_assets.sh
+          gomobile bind -v -target=android -androidapi=21 -o ../libv2ray.aar .
+
+      - name: Upload AAR Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: libv2ray.aar
+          path: libv2ray.aar
