@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR
+name: Build AndroidLibXrayLite AAR (ARM64 only)
 
 on:
   push:
@@ -42,18 +42,17 @@ jobs:
           echo "export ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
           echo "export PATH=$PATH:$HOME/android/cmdline-tools/cmdline-tools/bin" >> $GITHUB_ENV
 
-      # 6️⃣ Build the AAR
-      - name: Build AAR
+      # 6️⃣ Build the AAR for arm64-v8a only
+      - name: Build AAR (arm64-v8a)
         run: |
           cd AndroidLibXrayLite
           go mod tidy
-          # optional: generate geoip/geosite assets if required
-          # ./scripts/gen_assets.sh
-          gomobile bind -v -target=android -androidapi=21 -o ../libv2ray.aar .
+          # Set GOARCH to arm64
+          GOOS=android GOARCH=arm64 gomobile bind -v -target=android -androidapi=21 -o ../libv2ray-arm64.aar .
 
       # 7️⃣ Upload the built AAR as artifact
       - name: Upload AAR Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: libv2ray.aar
-          path: libv2ray.aar
+          name: libv2ray-arm64.aar
+          path: libv2ray-arm64.aar
