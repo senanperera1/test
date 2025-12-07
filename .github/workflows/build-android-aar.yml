@@ -27,13 +27,14 @@ jobs:
 
       - name: Install Android SDK + NDK side-by-side
         run: |
-          mkdir -p $HOME/android-sdk
-          cd $HOME/android-sdk
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd $HOME/android-sdk/cmdline-tools
           curl -o sdk-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip sdk-tools.zip -d cmdline-tools
-          export PATH=$HOME/android-sdk/cmdline-tools/bin:$PATH
-          yes | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --licenses
-          $HOME/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-21" "ndk;26.1.10909125"
+          unzip sdk-tools.zip -d latest
+          export ANDROID_HOME=$HOME/android-sdk
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-21" "ndk;26.1.10909125"
 
       - name: Build arm64 AAR
         working-directory: .
