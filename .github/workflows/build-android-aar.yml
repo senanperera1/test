@@ -1,48 +1,49 @@
-name: Build Android AAR (ARM64)
+name: Build Xray AAR with TUN
 
 on:
+  workflow_dispatch:   # run manually from Actions tab
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ "tun-build" ]   # only trigger on a dedicated branch
 
 jobs:
   build-aar:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout your repo
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout your repo
+        uses: actions/checkout@v3
 
-      # 2️⃣ Install Go 1.24
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Clone Xray-core upstream
+        run: |
+          git clone https://github.com/XTLS/Xray-core.git
+          cd Xray-core
+          git submodule update --init --recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
         with:
-          go-version: "1.24.11"
+          go-version: "1.21"
 
-      # 3️⃣ Install gomobile
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
-          $HOME/go/bin/gomobile init
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
 
-      # 4️⃣ Setup Android NDK (r25c)
       - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
+        uses: android-actions/setup-android@v3
         with:
-          ndk-version: r25c
+          ndk-version: "26.1.10909125"
 
-      # 5️⃣ Build AAR for ARM64
-      - name: Build AAR
+      - name: Build AAR with TUN
+        working-directory: Xray-core
         run: |
-          cd mobile
-          go mod init mobile || true
-          go mod tidy
-          $HOME/go/bin/gomobile bind -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
+          # gomobile bind wraps Go packages into Android AAR/JAR
+          gomobile bind -target=android ./main
+          ls -lh *.aar *.jar || true
 
-      # 6️⃣ Upload artifact
-      - name: Upload libv2ray.aar
-        uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: libv2ray
-          path: libv2ray.aar
+          name: xray-aar-tun
+          path: "Xray-core/*.aar"
