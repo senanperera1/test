@@ -1,160 +1,54 @@
-name: Build AndroidLibXrayLite AAR (arm64 + protect hook + pagesize)
+name: Build AndroidLibXrayLite AAR (ARM64 only)
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  build-arm64-aar:
+  build-aar:
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: "1"
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Clone AndroidLibXrayLite upstream
+      - name: Clone AndroidLibXrayLite
         run: |
           git clone https://github.com/2dust/AndroidLibXrayLite.git
-
-      - name: Add mobile wrapper files (protect + exports + pagesize)
-        run: |
-          cat > AndroidLibXrayLite/mobile/protect_wrapper.go <<'EOF'
-package mobile
-
-// This file provides a registration point for an Android-side Protect(fd) callback.
-//
-// Usage from Java/Kotlin:
-//   // implement ProtectHandler in Java (generated from gomobile)
-//   Libv2ray.RegisterProtect(new ProtectHandler() {
-//       public long Protect(long fd) {
-//           // call VpnService.protect((int)fd) here
-//           return 0L;
-//       }
-//   });
-//
-// Then the Go core (or wrapper) can call CallProtect(fd) to invoke the registered handler.
-
-import "sync"
-
-// ProtectHandler is an interface that gomobile will map to a Java interface.
-type ProtectHandler interface {
-	Protect(fd int64) int64
-}
-
-var (
-	protectHandler ProtectHandler
-	protectMu      sync.RWMutex
-)
-
-// RegisterProtect registers a Protect handler from Java/Kotlin side.
-// Call this from Android before starting the core.
-func RegisterProtect(h ProtectHandler) {
-	protectMu.Lock()
-	defer protectMu.Unlock()
-	protectHandler = h
-}
-
-// CallProtect calls the registered Protect handler (if any).
-// Returns -1 if no handler registered, otherwise returns handler result.
-func CallProtect(fd int64) int64 {
-	protectMu.RLock()
-	h := protectHandler
-	protectMu.RUnlock()
-	if h == nil {
-		return -1
-	}
-	return h.Protect(fd)
-}
-EOF
-
-          cat > AndroidLibXrayLite/mobile/exports.go <<'EOF'
-package mobile
-
-// Convenience wrappers to expose functions in the generated binding.
-// These simply call into package-level functions that may already exist in the project.
-// They are added so the gomobile binding will include them and Java can call them.
-
-import "fmt"
-
-// CheckVersionX returns native core version (wrapper)
-func CheckVersionX() string {
-	// Attempt to call some core-provided function if available.
-	// If the project has a different function name, adapt this wrapper.
-	if f := checkVersionXImpl; f != nil {
-		return f()
-	}
-	return "unknown"
-}
-
-// Placeholder function pointer: if upstream defines checkVersionXImpl, it will be used.
-// This allows the wrapper to compile even if upstream defines the symbol differently.
-var checkVersionXImpl func() string
-
-// InitCoreEnv wrapper (if core exposes this)
-func InitCoreEnv(path string, workdir string) {
-	if f := initCoreEnvImpl; f != nil {
-		f(path, workdir)
-		return
-	}
-	// fallback no-op
-	fmt.Println("InitCoreEnv: no-op (no impl provided)")
-}
-
-var initCoreEnvImpl func(string, string)
-
-// MeasureOutboundDelay wrapper
-func MeasureOutboundDelay(a, b string) (int64, error) {
-	if f := measureOutboundDelayImpl; f != nil {
-		return f(a, b)
-	}
-	return -1, nil
-}
-
-var measureOutboundDelayImpl func(string, string) (int64, error)
-EOF
-
-          cat > AndroidLibXrayLite/mobile/pagesize.go <<'EOF'
-package mobile
-
-// PageSize can be set at build time via -ldflags "-X mobile.PageSize=16384"
-// Default here is 4096.
-var PageSize = 4096
-EOF
 
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.21'
+          go-version: "1.21"
 
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Install Android SDK & NDK
+      - name: Install Android SDK & NDK (manual)
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip wget
           wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
           mkdir -p $HOME/android/cmdline-tools
-          unzip cmdline-tools.zip -d $HOME/android/cmdline-tools
+          unzip -q cmdline-tools.zip -d $HOME/android/cmdline-tools
           yes | $HOME/android/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android "ndk;25.2.9519653" "platforms;android-21"
           echo "ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
-          echo "$PATH:$HOME/android/cmdline-tools/cmdline-tools/bin" >> $GITHUB_ENV
+          echo "$HOME/android/cmdline-tools/cmdline-tools/bin" >> $GITHUB_PATH
 
-      - name: Build AAR (arm64, set PageSize to 16384)
+      - name: Build AAR (arm64)
         run: |
           cd AndroidLibXrayLite
           go mod tidy
-          # Build with PageSize set to 16384 via -ldflags; output to parent dir:
-          # Note: -X requires full package path; mobile.PageSize is used here.
-          GOOS=android GOARCH=arm64 gomobile bind -v -target=android -androidapi=21 -ldflags="-X mobile.PageSize=16384" -o ../libv2ray-arm64-protect.aar .
+          # build arm64-only aar
+          GOOS=android GOARCH=arm64 gomobile bind -v -target=android -androidapi=21 -o ../libv2ray-arm64.aar .
 
       - name: Upload AAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: libv2ray-arm64-protect.aar
-          path: libv2ray-arm64-protect.aar
+          name: libv2ray-arm64.aar
+          path: libv2ray-arm64.aar
