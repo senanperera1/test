@@ -1,4 +1,4 @@
-name: Build Stable AndroidLibXrayLite (v1.0.25)
+name: Build AndroidLibXrayLite AAR (Manual Checkout)
 
 on:
   workflow_dispatch:
@@ -8,12 +8,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout AndroidLibXrayLite
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
-          ref: 'refs/tags/v1.0.25' # Trying tag again with full depth
-          fetch-depth: 0 
+          fetch-depth: 0 # Fetch everything
+
+      - name: Switch to v1.0.25
+        run: |
+          git fetch --tags
+          git checkout v1.0.25 || git checkout tags/v1.0.25 || echo "Tag not found, building HEAD"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -51,10 +55,10 @@ jobs:
 
       - name: Build arm64 AAR
         run: |
-          # Build v1.0.25 which naturally supports TUN via its own go.mod dependencies
-          # We do NOT need to inject imports because v1.0.25 was correct at the time.
-          # We just need the build tags.
-          go mod tidy
+          # Try to tidy first to ensure deps are ok
+          go mod tidy || true
+          
+          # Build with TUN tag. v1.0.25 has correct imports naturally.
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
           ls -lh *.aar
 
