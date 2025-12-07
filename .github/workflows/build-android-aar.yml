@@ -33,15 +33,17 @@ jobs:
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 33
-          ndk-version: "26.1.10909125"
+          api-level: 21                # explicitly set API 21
+          ndk-version: "26.1.10909125" # NDK r26c
 
       - name: Build AAR with TUN
         working-directory: Xray-core
         run: |
-          # Explicitly tell gomobile where the NDK is
-          gomobile bind -target=android ./main \
-            -ndk $ANDROID_SDK_ROOT/ndk/26.1.10909125
+          gomobile bind \
+            -target=android \
+            -androidapi=21 \
+            -ndk $ANDROID_SDK_ROOT/ndk/26.1.10909125 \
+            ./main
           ls -lh *.aar *.jar || true
 
       - name: Upload Artifact
