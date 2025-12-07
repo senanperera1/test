@@ -1,6 +1,4 @@
-name: Build Custom Xray Wrapper (Bind Fix)
-
-on:
+name: Build Custom Xray Wrapper (Final Fix)on:
   workflow_dispatch:
 
 jobs:
@@ -47,28 +45,25 @@ jobs:
           mkdir mywrapper
           cd mywrapper
           
-          # Initialize module
           go mod init github.com/myuser/libv2ray
           
-          # Create libv2ray.go with the wrapper code
+          # Corrected Go code: Removed unused "os", added "strings"
           cat <<EOF > libv2ray.go
           package libv2ray
 
           import (
               "fmt"
-              "os"
               "strings"
               
-              // Xray Core Imports
+              // Force imports for TUN and all features
               _ "github.com/xtls/xray-core/main/distro/all"
               core "github.com/xtls/xray-core/core"
               "github.com/xtls/xray-core/infra/conf/serial"
               
-              // Force bind import so go mod tidy keeps it
+              // Force bind to ensure gomobile finds it
               _ "golang.org/x/mobile/bind"
           )
 
-          // Simple wrapper class
           type V2RayPoint struct {
               instance *core.Instance
               running  bool
