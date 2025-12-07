@@ -1,4 +1,6 @@
-name: Build AndroidLibXrayLite (HEAD + Force TUN)on:
+name: Build AndroidLibXrayLite (HEAD + Force TUN)
+
+on:
   workflow_dispatch:
 
 jobs:
