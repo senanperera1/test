@@ -30,13 +30,18 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
 
-      - name: Setup Android NDK
+      # Pin both SDK and NDK versions
+      - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
         with:
-          ndk-version: "26.1.10909125"
+          api-level: 33              # valid API level for gomobile
+          ndk-version: "26.1.10909125"  # r26c, supported by gomobile
 
       - name: Build AAR with TUN
         working-directory: Xray-core
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
         run: |
           gomobile bind -target=android ./main
           ls -lh *.aar *.jar || true
