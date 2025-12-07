@@ -19,24 +19,7 @@ jobs:
       - name: Create mobile package and Go file
         run: |
           mkdir -p v2ray/v5/mobile
-          echo "package mobile
-
-import \"C\"
-
-// StartCore starts the core with a config
-func StartCore(config string) string {
-    return \"Core started with config: \" + config
-}
-
-// StopCore stops the core
-func StopCore() string {
-    return \"Core stopped\"
-}
-
-// Protect example function for VPN protection
-func Protect(uid int) bool {
-    return true
-}" > v2ray/v5/mobile/mobile.go
+          printf 'package mobile\n\nimport "C"\n\n// StartCore starts the core with a config\nfunc StartCore(config string) string {\n    return "Core started with config: " + config\n}\n\n// StopCore stops the core\nfunc StopCore() string {\n    return "Core stopped"\n}\n\n// Protect example function for VPN protection\nfunc Protect(uid int) bool {\n    return true\n}\n' > v2ray/v5/mobile/mobile.go
 
       - name: Set up Go
         uses: actions/setup-go@v5
