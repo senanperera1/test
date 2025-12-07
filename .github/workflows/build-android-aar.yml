@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (v1.0.25 Explicit)
+name: Build AndroidLibXrayLite AAR (HEAD + Forced Stable Core)
 
 on:
   workflow_dispatch:
@@ -8,12 +8,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout AndroidLibXrayLite
+      - name: Checkout AndroidLibXrayLite (Default Branch)
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
-          ref: refs/tags/v1.0.25
           submodules: true
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -51,12 +51,14 @@ jobs:
 
       - name: Inject TUN Import & Pin Xray
         run: |
-          # Force Xray Core to v1.8.4 (Compatible with v1.0.25)
-          go get github.com/xtls/xray-core@v1.8.4
+          # Force Xray Core to v1.8.4 which definitely has proxy/tun and works
+          go mod edit -replace github.com/xtls/xray-core=github.com/xtls/xray-core@v1.8.4
           
+          # Create dummy file to force import the TUN module
           echo 'package libv2ray' > force_tun.go
           echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
           
+          # Tidy up dependencies to ensure the replacement is respected
           go mod tidy
 
       - name: Build arm64 AAR
