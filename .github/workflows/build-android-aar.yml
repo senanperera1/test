@@ -1,4 +1,4 @@
-name: Build Custom Xray Wrapper (Explicit TUN)
+name: Build Custom Xray Wrapper (Modern Xray)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.22" # Latest Go for Latest Xray
 
       - name: Install gomobile
         run: |
@@ -49,7 +49,7 @@ jobs:
           
           go mod init github.com/myuser/libv2ray
           
-          # We create the Go file with EXPLICIT import for proxy/tun
+          # Create libv2ray.go
           cat <<EOF > libv2ray.go
           package libv2ray
 
@@ -57,16 +57,19 @@ jobs:
               "fmt"
               "strings"
               
-              // Import distro/all for standard modules
+              // Import distro/all which should register standard modules
               _ "github.com/xtls/xray-core/main/distro/all"
               
-              // CRITICAL: Explicitly import TUN to register the config id "tun"
-              _ "github.com/xtls/xray-core/proxy/tun"
+              // Explicitly import standard inbounds/outbounds just in case
+              _ "github.com/xtls/xray-core/app/proxyman/inbound"
+              _ "github.com/xtls/xray-core/app/proxyman/outbound"
+              
+              // Import config loaders
+              _ "github.com/xtls/xray-core/infra/conf/command"
               
               core "github.com/xtls/xray-core/core"
               "github.com/xtls/xray-core/infra/conf/serial"
               
-              // Force bind
               _ "golang.org/x/mobile/bind"
           )
 
@@ -113,16 +116,16 @@ jobs:
           }
           EOF
           
-          # Dependencies
+          # Get latest deps
           go get golang.org/x/mobile/bind
-          go get github.com/xtls/xray-core@v1.8.4
+          go get github.com/xtls/xray-core@latest
           
           go mod tidy
 
       - name: Build Custom AAR
         working-directory: mywrapper
         run: |
-          # Build with tags to be safe
+          # Build with tags "json,tun". Note: newer Xray might not need "tun" tag if imported correctly, but it hurts nothing.
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
           ls -lh ../libv2ray.aar
 
