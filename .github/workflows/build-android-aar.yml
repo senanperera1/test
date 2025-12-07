@@ -1,4 +1,4 @@
-name: Build Custom Xray Wrapper (Final Fix)
+name: Build Custom Xray Wrapper (Explicit TUN)
 
 on:
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
           
           go mod init github.com/myuser/libv2ray
           
-          # Corrected Go code: Removed unused "os", added "strings"
+          # We create the Go file with EXPLICIT import for proxy/tun
           cat <<EOF > libv2ray.go
           package libv2ray
 
@@ -57,12 +57,16 @@ jobs:
               "fmt"
               "strings"
               
-              // Force imports for TUN and all features
+              // Import distro/all for standard modules
               _ "github.com/xtls/xray-core/main/distro/all"
+              
+              // CRITICAL: Explicitly import TUN to register the config id "tun"
+              _ "github.com/xtls/xray-core/proxy/tun"
+              
               core "github.com/xtls/xray-core/core"
               "github.com/xtls/xray-core/infra/conf/serial"
               
-              // Force bind to ensure gomobile finds it
+              // Force bind
               _ "golang.org/x/mobile/bind"
           )
 
@@ -109,7 +113,7 @@ jobs:
           }
           EOF
           
-          # Get dependencies
+          # Dependencies
           go get golang.org/x/mobile/bind
           go get github.com/xtls/xray-core@v1.8.4
           
@@ -118,7 +122,8 @@ jobs:
       - name: Build Custom AAR
         working-directory: mywrapper
         run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
+          # Build with tags to be safe
+          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
           ls -lh ../libv2ray.aar
 
       - name: Upload AAR
