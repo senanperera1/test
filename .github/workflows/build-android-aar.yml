@@ -1,4 +1,4 @@
-name: Build Xray-tun AAR (arm64)
+name: Build AndroidLibXrayLite AAR (arm64)
 
 on:
   workflow_dispatch:
@@ -7,14 +7,12 @@ jobs:
   build-aar:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout Xray-tun
+    steps:- name: Checkout AndroidLibXrayLite
         uses: actions/checkout@v4
         with:
-          repository: 0xpirouz/Xray-tun
+          repository: 2dust/AndroidLibXrayLite
           submodules: true
 
-      # FIX 1: gomobile requires Java (JDK) to build the AAR classes
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -34,38 +32,31 @@ jobs:
 
       - name: Install Android SDK + NDK
         run: |
-          # Create base directory
           mkdir -p $HOME/android-sdk/cmdline-tools
-          
-          # Download Command Line Tools
           curl -o sdk-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          
-          # Unzip and restructure to cmdline-tools/latest (Required by sdkmanager)
           unzip -q sdk-tools.zip -d $HOME/android-sdk/cmdline-tools
           mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
           
-          # Set temporary path for this step
           export ANDROID_HOME=$HOME/android-sdk
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           
-          # Accept Licenses and Install NDK and Build Tools
           yes | sdkmanager --licenses
+          # Install NDK 26.x which is compatible with recent Go versions
           sdkmanager "platforms;android-21" "ndk;26.1.10909125" "build-tools;34.0.0"
 
-          # FIX 2: Persist Environment Variables for the next steps
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Build arm64 AAR
+      - name: Build arm64 AAR with TUN support
         run: |
-          # gomobile uses the env vars set in the previous step
-          # FIX 3: Added -o libv2ray.aar to ensure the output file is named correctly
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o libv2ray.aar ./main
+          # We bind "." (current dir) which corresponds to package 'libv2ray'
+          # We add -tags "json,tun" to force the inclusion of the TUN module
+          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
           ls -lh *.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: xray-tun-aar-arm64
+          name: libv2ray-aar-arm64
           path: "*.aar"
