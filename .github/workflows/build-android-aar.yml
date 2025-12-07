@@ -1,7 +1,9 @@
 name: Build AndroidLibXrayLite AAR (Manual Clone v1.0.25)
 
 on:
-  workflow_dispatch:jobs:
+  workflow_dispatch:
+
+jobs:
   build-aar:
     runs-on: ubuntu-latest
 
