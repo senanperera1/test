@@ -1,57 +1,56 @@
 name: Build Xray AAR with TUN
 
 on:
-  workflow_dispatch:   # run manually from Actions tab
+  workflow_dispatch:
   push:
-    branches: [ "tun-build" ]   # only trigger on a dedicated branch
+    branches: [ "tun-build" ]
 
 jobs:
   build-aar:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout your repo (not strictly needed, but keeps Actions happy)
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Clone upstream Xray-core
       - name: Clone Xray-core
         run: |
           git clone https://github.com/XTLS/Xray-core.git
           cd Xray-core
           git submodule update --init --recursive
 
-      # Setup Go
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.21"
 
-      # Install gomobile and gobind
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
 
-      # Setup Android SDK + NDK (side-by-side)
-      - name: Setup Android SDK + NDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 21
-          ndk-version: "26.1.10909125"
+      # Install Android command-line tools and side-by-side NDK
+      - name: Install Android SDK + NDK
+        run: |
+          mkdir -p $HOME/android-sdk
+          cd $HOME/android-sdk
+          curl -o sdk-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip sdk-tools.zip -d cmdline-tools
+          export ANDROID_HOME=$HOME/android-sdk
+          export PATH=$ANDROID_HOME/cmdline-tools/bin:$PATH
+          yes | $ANDROID_HOME/cmdline-tools/bin/sdkmanager --licenses
+          $ANDROID_HOME/cmdline-tools/bin/sdkmanager "platforms;android-21" "ndk;26.1.10909125"
 
-      # Build AAR with TUN enabled
       - name: Build AAR with TUN
         working-directory: Xray-core
         env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
+          ANDROID_HOME: $HOME/android-sdk
+          ANDROID_NDK_HOME: $HOME/android-sdk/ndk/26.1.10909125
         run: |
           gomobile bind -target=android -androidapi=21 ./main
           ls -lh *.aar *.jar || true
 
-      # Upload artifact
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
