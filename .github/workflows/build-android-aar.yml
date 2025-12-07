@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (ARM64)
+name: Build Android AAR (ARM64)
 
 on:
   push:
@@ -10,45 +10,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout your repository (with patch files included)
+      # 1️⃣ Checkout your repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Clone AndroidLibXrayLite
-      - name: Clone AndroidLibXrayLite
-        run: git clone https://github.com/2dust/AndroidLibXrayLite.git
-
-      # 3️⃣ Copy your patch files into the repo
-      - name: Apply patch files
-        run: |
-          cp patch/*.go AndroidLibXrayLite/
-
-      # 4️⃣ Set up Go
+      # 2️⃣ Set up Go
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.21"
 
-      # 5️⃣ Install gomobile
-      - name: Install gomobile
+      # 3️⃣ Install gomobile and bind package
+      - name: Install gomobile and bind
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
+          go get golang.org/x/mobile/bind@latest
 
-      # 6️⃣ Set up Android NDK
-      - name: Setup NDK
+      # 4️⃣ Set up Android NDK (r25c recommended)
+      - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25c
 
-      # 7️⃣ Build the AAR for ARM64 only
+      # 5️⃣ Build the AAR (ARM64)
       - name: Build AAR
         run: |
-          cd AndroidLibXrayLite
+          cd mobile
+          go mod init mobile || true
           go mod tidy
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
+          gomobile bind -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
 
-      # 8️⃣ Upload the AAR artifact
+      # 6️⃣ Upload AAR artifact
       - name: Upload libv2ray.aar
         uses: actions/upload-artifact@v4
         with:
