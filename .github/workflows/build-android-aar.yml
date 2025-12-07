@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (Latest + TUN)
+name: Build AndroidLibXrayLite AAR (Stable + Pinned Core)
 
 on:
   workflow_dispatch:
@@ -8,10 +8,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout AndroidLibXrayLite (Latest)
+      - name: Checkout AndroidLibXrayLite
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
+          # Using default branch but we will pin deps manually
           submodules: true
           fetch-depth: 0
 
@@ -49,10 +50,14 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Inject TUN Import & Fix Deps
+      - name: Inject TUN Import & Pin Xray Version
         run: |
+          # Force Xray Core to v1.8.4 which definitely has proxy/tun
+          go get github.com/xtls/xray-core@v1.8.4
+          
           echo 'package libv2ray' > force_tun.go
           echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
+          
           go mod tidy
 
       - name: Build arm64 AAR
