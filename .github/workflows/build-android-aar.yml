@@ -1,4 +1,4 @@
-name: Build Custom Xray Wrapper (Fixed Deps)
+name: Build Custom Xray Wrapper (Bind Fix)
 
 on:
   workflow_dispatch:
@@ -63,6 +63,9 @@ jobs:
               _ "github.com/xtls/xray-core/main/distro/all"
               core "github.com/xtls/xray-core/core"
               "github.com/xtls/xray-core/infra/conf/serial"
+              
+              // Force bind import so go mod tidy keeps it
+              _ "golang.org/x/mobile/bind"
           )
 
           // Simple wrapper class
@@ -109,10 +112,8 @@ jobs:
           }
           EOF
           
-          # FIX: Explicitly add golang.org/x/mobile as a dependency
-          go get golang.org/x/mobile@latest
-          
-          # Force Xray v1.8.4 (Known Stable)
+          # Get dependencies
+          go get golang.org/x/mobile/bind
           go get github.com/xtls/xray-core@v1.8.4
           
           go mod tidy
