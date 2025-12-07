@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (Manual Checkout)
+name: Build AndroidLibXrayLite (Commit 6f77295)
 
 on:
   workflow_dispatch:
@@ -12,12 +12,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
-          fetch-depth: 0 # Fetch everything
-
-      - name: Switch to v1.0.25
-        run: |
-          git fetch --tags
-          git checkout v1.0.25 || git checkout tags/v1.0.25 || echo "Tag not found, building HEAD"
+          ref: 6f77295  # Explicit commit hash for v1.0.25
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -55,10 +51,10 @@ jobs:
 
       - name: Build arm64 AAR
         run: |
-          # Try to tidy first to ensure deps are ok
-          go mod tidy || true
+          # Verify commit
+          git log -1
           
-          # Build with TUN tag. v1.0.25 has correct imports naturally.
+          go mod tidy || true
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
           ls -lh *.aar
 
