@@ -8,7 +8,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Java              uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -43,7 +44,7 @@ jobs:
 
       - name: Manual Clone & Checkout
         run: |
-          # Clone into 'source_code' directory
+          # Clone into 'source_code' directory to avoid "not empty" errors
           git clone https://github.com/2dust/AndroidLibXrayLite.git source_code
           
           cd source_code
@@ -55,7 +56,7 @@ jobs:
         working-directory: source_code
         run: |
           go mod tidy || true
-          # Build with TUN tag
+          # Build with TUN tag. v1.0.25 has correct imports naturally.
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
           ls -lh ../libv2ray.aar
 
