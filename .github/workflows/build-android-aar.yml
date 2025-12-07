@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (v1.0.25 + TUN)
+name: Build AndroidLibXrayLite AAR (Latest + TUN)
 
 on:
   workflow_dispatch:
@@ -8,14 +8,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout AndroidLibXrayLite
+      - name: Checkout AndroidLibXrayLite (Latest)
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
+          submodules: true
           fetch-depth: 0
-
-      - name: Checkout Tag v1.0.25
-        run: git checkout v1.0.25
 
       - name: Setup Java
         uses: actions/setup-java@v4
