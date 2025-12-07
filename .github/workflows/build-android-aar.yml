@@ -7,7 +7,8 @@ jobs:
   build-aar:
     runs-on: ubuntu-latest
 
-    steps:- name: Checkout AndroidLibXrayLite
+    steps:
+      - name: Checkout AndroidLibXrayLite
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
@@ -41,7 +42,6 @@ jobs:
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           
           yes | sdkmanager --licenses
-          # Install NDK 26.x which is compatible with recent Go versions
           sdkmanager "platforms;android-21" "ndk;26.1.10909125" "build-tools;34.0.0"
 
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
@@ -50,8 +50,6 @@ jobs:
 
       - name: Build arm64 AAR with TUN support
         run: |
-          # We bind "." (current dir) which corresponds to package 'libv2ray'
-          # We add -tags "json,tun" to force the inclusion of the TUN module
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
           ls -lh *.aar
 
