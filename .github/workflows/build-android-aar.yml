@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite (Force TUN)
+name: Build AndroidLibXrayLite (Source Zip v1.0.25)
 
 on:
   workflow_dispatch:
@@ -8,13 +8,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Latest
-        uses: actions/checkout@v4
-        with:
-          repository: 2dust/AndroidLibXrayLite
-          submodules: true
-          fetch-depth: 0
-
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -49,25 +42,28 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Force Compatible Xray & Inject TUN
+      - name: Download Source & Build
         run: |
-          # 1. Force download compatible Xray Core v1.8.4
-          go get github.com/xtls/xray-core@v1.8.4
+          # Download source code zip for v1.0.25 directly
+          wget https://github.com/2dust/AndroidLibXrayLite/archive/refs/tags/v1.0.25.zip -O source.zip
+          unzip source.zip
           
-          # 2. Inject import
-          echo 'package libv2ray' > force_tun.go
-          echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
+          # Enter the extracted directory
+          cd AndroidLibXrayLite-1.0.25
           
-          # 3. Tidy to lock it in
+          # Verify go.mod exists
+          ls -l go.mod
+          
+          # Tidy up deps (should work cleanly on this stable version)
           go mod tidy
-
-      - name: Build AAR
-        run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
-          ls -lh *.aar
+          
+          # Build with TUN tag
+          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
+          
+          ls -lh ../libv2ray.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: libv2ray-aar-arm64
-          path: "*.aar"
+          path: "libv2ray.aar"
