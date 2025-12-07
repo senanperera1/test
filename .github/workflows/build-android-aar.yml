@@ -44,22 +44,18 @@ jobs:
 
       - name: Download Source & Build
         run: |
-          # Download source code zip for v1.0.25 directly
+          # Download source code zip for v1.0.25 directly to bypass git issues
           wget https://github.com/2dust/AndroidLibXrayLite/archive/refs/tags/v1.0.25.zip -O source.zip
           unzip source.zip
           
-          # Enter the extracted directory
+          # The unzipped folder is usually named 'AndroidLibXrayLite-1.0.25'
           cd AndroidLibXrayLite-1.0.25
           
-          # Verify go.mod exists
-          ls -l go.mod
-          
-          # Tidy up deps (should work cleanly on this stable version)
+          # Tidy up deps
           go mod tidy
           
           # Build with TUN tag
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
-          
           ls -lh ../libv2ray.aar
 
       - name: Upload AAR
