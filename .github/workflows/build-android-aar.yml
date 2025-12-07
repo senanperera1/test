@@ -1,4 +1,4 @@
-name: Build Fixed AAR (v1.0.25 + TUN)
+name: Build AndroidLibXrayLite AAR (v1.0.25 + TUN)
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ jobs:
           repository: 2dust/AndroidLibXrayLite
           ref: v1.0.25
           submodules: true
+          fetch-depth: 0 # Fixes issue with fetching tags
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -51,11 +52,8 @@ jobs:
 
       - name: Inject TUN Import & Fix Deps
         run: |
-          # Force import TUN. In v1.0.25 (Xray 1.8.x), this path is valid.
           echo 'package libv2ray' > force_tun.go
           echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
-          
-          # We perform a tidy to ensure the module is fetched
           go mod tidy
 
       - name: Build arm64 AAR
