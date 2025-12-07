@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (Generic Import Injection)
+name: Build Stable AndroidLibXrayLite (v1.0.25)
 
 on:
   workflow_dispatch:
@@ -12,8 +12,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
-          submodules: true
-          fetch-depth: 0
+          ref: 'refs/tags/v1.0.25' # Trying tag again with full depth
+          fetch-depth: 0 
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -24,7 +24,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22" # Use a newer Go version for latest Xray
+          go-version: "1.21"
 
       - name: Install gomobile
         run: |
@@ -49,17 +49,12 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Inject Imports & Build
+      - name: Build arm64 AAR
         run: |
-          # Create dummy file to force-import proxyman, which usually registers 'tun' inbound
-          echo 'package libv2ray' > force_tun.go
-          echo 'import _ "github.com/xtls/xray-core/app/proxyman/inbound"' >> force_tun.go
-          echo 'import _ "github.com/xtls/xray-core/app/proxyman/outbound"' >> force_tun.go
-          
-          # Tidy to resolve any new deps
+          # Build v1.0.25 which naturally supports TUN via its own go.mod dependencies
+          # We do NOT need to inject imports because v1.0.25 was correct at the time.
+          # We just need the build tags.
           go mod tidy
-
-          # Build with tun tag
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
           ls -lh *.aar
 
