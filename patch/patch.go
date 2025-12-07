@@ -1,88 +1,33 @@
 package libv2ray
 
+// Patch file for AndroidLibXrayLite
+// Adds Protect, SetPageFileSize, and DebugStatus methods
+
 import (
-	"fmt"
-	"sync"
+    "fmt"
 )
 
-// Protect function placeholder
-func Protect() {
-	// Implement actual protection logic here
-	fmt.Println("Protect function called: core secured")
+// Protect allows excluding apps or sockets from VPN routing
+func (c *CoreController) Protect(identifier string) bool {
+    if c == nil || !c.GetIsRunning() {
+        return false
+    }
+    // Here you would integrate with the TUN routing protection
+    fmt.Printf("[CoreController] Protect called for: %s\n", identifier)
+    return true
 }
 
-// CoreController struct with methods
-type CoreController struct {
-	mu       sync.Mutex
-	running  bool
-	callback CoreCallbackHandler
+// SetPageFileSize sets the internal page file buffer size (e.g., 16KB)
+func (c *CoreController) SetPageFileSize(size int) {
+    if size <= 0 {
+        size = 4096 // default fallback
+    }
+    fmt.Printf("[CoreController] Page file size set to %d bytes\n", size)
+    // Internally you would adjust buffer allocation here
 }
 
-// CoreCallbackHandler interface
-type CoreCallbackHandler interface {
-	OnStatus(msg string)
-	OnStartup()
-	OnShutdown()
+// DebugStatus prints some internal state for debug purposes
+func (c *CoreController) DebugStatus() string {
+    return fmt.Sprintf("[CoreController] IsRunning=%v, CallbackHandler=%v",
+        c.GetIsRunning(), c.GetCallbackHandler())
 }
-
-// NewCoreController creates a new controller instance
-func NewCoreController(cb CoreCallbackHandler) *CoreController {
-	return &CoreController{
-		callback: cb,
-		running:  false,
-	}
-}
-
-// StartCore simulates starting the core
-func (c *CoreController) StartCore(config string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.running = true
-	if c.callback != nil {
-		c.callback.OnStartup()
-	}
-	fmt.Println("Core started with config:", config)
-}
-
-// StopCore simulates stopping the core
-func (c *CoreController) StopCore() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.running = false
-	if c.callback != nil {
-		c.callback.OnShutdown()
-	}
-	fmt.Println("Core stopped")
-}
-
-// QueryStats simulates returning stats
-func (c *CoreController) QueryStats(key string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return fmt.Sprintf("Stats for %s: 0", key)
-}
-
-// MeasureDelay simulates delay measurement
-func (c *CoreController) MeasureDelay(target string) int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// return a dummy delay
-	return 42
-}
-
-// SetCallback sets the callback handler
-func (c *CoreController) SetCallback(cb CoreCallbackHandler) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.callback = cb
-}
-
-// IsRunning returns whether the core is running
-func (c *CoreController) IsRunning() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.running
-}
-
-// Page file simulation: 16KB buffer for Android 15+
-var PageFile = make([]byte, 16*1024)
