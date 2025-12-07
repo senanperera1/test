@@ -1,4 +1,4 @@
-name: Build Modern AndroidLibXrayLite (HEAD + TUN)
+name: Build Custom Xray Wrapper (Guaranteed TUN)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22" # Use latest Go for modern deps
+          go-version: "1.21"
 
       - name: Install gomobile
         run: |
@@ -42,36 +42,88 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Clone & Inject TUN
+      - name: Create Custom Wrapper
         run: |
-          # Clone latest code
-          git clone https://github.com/2dust/AndroidLibXrayLite.git source_code
-          cd source_code
+          mkdir mywrapper
+          cd mywrapper
           
-          # Inject TUN import. For modern Xray, we try the generic proxyman import + tun specific if available.
-          echo 'package libv2ray' > force_tun.go
-          # This path is valid in modern Xray core
-          echo 'import _ "github.com/xtls/xray-core/app/proxyman/inbound"' >> force_tun.go
-          echo 'import _ "github.com/xtls/xray-core/app/proxyman/outbound"' >> force_tun.go
-          # Try to import tun explicitly if it exists in the module graph
-          # We use a safe approach: update deps first.
+          # Initialize module
+          go mod init github.com/myuser/libv2ray
           
-          go get github.com/xtls/xray-core@latest
+          # Create libv2ray.go with the wrapper code
+          cat <<EOF > libv2ray.go
+          package libv2ray
+
+          import (
+              "fmt"
+              "os"
+              "strings"
+              
+              // Xray Core Imports - guarantees TUN and everything else is included
+              _ "github.com/xtls/xray-core/main/distro/all"
+              core "github.com/xtls/xray-core/core"
+              "github.com/xtls/xray-core/infra/conf/serial"
+          )
+
+          // Simple wrapper class
+          type V2RayPoint struct {
+              instance *core.Instance
+              running  bool
+          }
+
+          func NewV2RayPoint() *V2RayPoint {
+              return &V2RayPoint{}
+          }
+
+          func (v *V2RayPoint) RunLoop(configContent string) error {
+              // Load config
+              config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
+              if err != nil {
+                  return fmt.Errorf("failed to load config: %v", err)
+              }
+
+              // Create instance
+              server, err := core.New(config)
+              if err != nil {
+                  return fmt.Errorf("failed to create instance: %v", err)
+              }
+
+              v.instance = server
+              
+              if err := server.Start(); err != nil {
+                  return fmt.Errorf("failed to start server: %v", err)
+              }
+              
+              v.running = true
+              return nil
+          }
+
+          func (v *V2RayPoint) StopLoop() error {
+              if v.instance != nil {
+                  v.instance.Close()
+              }
+              v.running = false
+              return nil
+          }
+          
+          func (v *V2RayPoint) IsRunning() bool {
+              return v.running
+          }
+          EOF
+          
+          # Download dependencies
+          # Force Xray v1.8.4 (Known Stable)
+          go get github.com/xtls/xray-core@v1.8.4
           go mod tidy
-          
-          # Now inject the specific tun package if it exists in the fetched version
-          # Modern Xray puts tun in app/proxyman/inbound usually, but let's add the explicit import just in case
-          # If this fails build, the previous imports should be enough with -tags
-          
-      - name: Build AAR
-        working-directory: source_code
+
+      - name: Build Custom AAR
+        working-directory: mywrapper
         run: |
-          # Build with TUN tag
-          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
           ls -lh ../libv2ray.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: libv2ray-aar-arm64
+          name: libv2ray-custom-aar
           path: "libv2ray.aar"
