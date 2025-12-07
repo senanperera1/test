@@ -1,4 +1,4 @@
-name: Build V2Ray Core AAR (ARM64)
+name: Build AndroidLibXrayLite AAR with Protect
 
 on:
   push:
@@ -13,13 +13,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Clone v2ray-core
-        run: git clone https://github.com/v2fly/v2ray-core.git v2ray
+      - name: Clone AndroidLibXrayLite
+        run: git clone https://github.com/2dust/AndroidLibXrayLite.git
 
-      - name: Create mobile package and Go file
+      - name: Create mobile.go with Protect function
         run: |
-          mkdir -p v2ray/v5/mobile
-          printf 'package mobile\n\nimport "C"\n\n// StartCore starts the core with a config\nfunc StartCore(config string) string {\n    return "Core started with config: " + config\n}\n\n// StopCore stops the core\nfunc StopCore() string {\n    return "Core stopped"\n}\n\n// Protect example function for VPN protection\nfunc Protect(uid int) bool {\n    return true\n}\n' > v2ray/v5/mobile/mobile.go
+          mkdir -p AndroidLibXrayLite/mobile
+          cat << 'EOF' > AndroidLibXrayLite/mobile/mobile.go
+          package mobile
+          
+          import "C"
+
+          // Protect enables protection
+          func Protect() string {
+              return "Protection enabled"
+          }
+
+          // StartCore starts the core with config
+          func StartCore(config string) string {
+              return "Core started with config: " + config
+          }
+
+          // MeasureDelay example function
+          func MeasureDelay(address string) string {
+              return "Measured delay for: " + address
+          }
+          EOF
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -31,17 +50,16 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Setup Android NDK
+      - name: Setup NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25c
 
-      - name: Build AAR
+      - name: Build AAR (ARM64 only)
         run: |
-          cd v2ray/v5/mobile
-          go mod init mobile
+          cd AndroidLibXrayLite
           go mod tidy
-          gomobile bind -target=android/arm64 -androidapi=21 -o ../../../libv2ray.aar .
+          gomobile bind -target=android/arm64 -androidapi=21 -o ../libv2ray.aar ./mobile
 
       - name: Upload libv2ray.aar
         uses: actions/upload-artifact@v4
