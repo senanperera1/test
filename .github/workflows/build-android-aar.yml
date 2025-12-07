@@ -1,4 +1,4 @@
-name: Build Custom Xray Wrapper (Guaranteed TUN)
+name: Build Custom Xray Wrapper (Fixed Deps)
 
 on:
   workflow_dispatch:
@@ -59,7 +59,7 @@ jobs:
               "os"
               "strings"
               
-              // Xray Core Imports - guarantees TUN and everything else is included
+              // Xray Core Imports
               _ "github.com/xtls/xray-core/main/distro/all"
               core "github.com/xtls/xray-core/core"
               "github.com/xtls/xray-core/infra/conf/serial"
@@ -76,13 +76,11 @@ jobs:
           }
 
           func (v *V2RayPoint) RunLoop(configContent string) error {
-              // Load config
               config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
               if err != nil {
                   return fmt.Errorf("failed to load config: %v", err)
               }
 
-              // Create instance
               server, err := core.New(config)
               if err != nil {
                   return fmt.Errorf("failed to create instance: %v", err)
@@ -111,9 +109,12 @@ jobs:
           }
           EOF
           
-          # Download dependencies
+          # FIX: Explicitly add golang.org/x/mobile as a dependency
+          go get golang.org/x/mobile@latest
+          
           # Force Xray v1.8.4 (Known Stable)
           go get github.com/xtls/xray-core@v1.8.4
+          
           go mod tidy
 
       - name: Build Custom AAR
