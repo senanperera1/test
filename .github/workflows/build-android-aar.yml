@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (Stable + Pinned Core)
+name: Build AndroidLibXrayLite AAR (Forced Stable)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 2dust/AndroidLibXrayLite
-          # Using default branch but we will pin deps manually
+          ref: v1.0.25
           submodules: true
           fetch-depth: 0
 
@@ -50,14 +50,20 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Inject TUN Import & Pin Xray Version
+      - name: Pin Dependencies & Inject TUN
         run: |
-          # Force Xray Core to v1.8.4 which definitely has proxy/tun
-          go get github.com/xtls/xray-core@v1.8.4
+          # FORCE the use of Xray Core v1.8.4 which has the 'tun' package.
+          # We use -replace to prevent any other dependency from upgrading it.
+          go mod edit -replace github.com/xtls/xray-core=github.com/xtls/xray-core@v1.8.4
+          
+          # We also need to fix quic-go which was complaining. 
+          # Xray v1.8.4 usually uses quic-go v0.39.x or similar. 
+          # Let's try to tidy first with the replacement active.
           
           echo 'package libv2ray' > force_tun.go
           echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
           
+          # Tidy will now respect the replace directive
           go mod tidy
 
       - name: Build arm64 AAR
