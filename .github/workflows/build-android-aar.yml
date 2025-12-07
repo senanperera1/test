@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (ARM64 only)
+name: Build V2Ray Core AAR (ARM64)
 
 on:
   push:
@@ -8,19 +8,38 @@ on:
 jobs:
   build-aar:
     runs-on: ubuntu-latest
-    env:
-      CGO_ENABLED: "1"
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Clone AndroidLibXrayLite
+      - name: Clone v2ray-core
+        run: git clone https://github.com/v2fly/v2ray-core.git v2ray
+
+      - name: Create mobile package and Go file
         run: |
-          git clone https://github.com/2dust/AndroidLibXrayLite.git
+          mkdir -p v2ray/v5/mobile
+          echo "package mobile
+
+import \"C\"
+
+// StartCore starts the core with a config
+func StartCore(config string) string {
+    return \"Core started with config: \" + config
+}
+
+// StopCore stops the core
+func StopCore() string {
+    return \"Core stopped\"
+}
+
+// Protect example function for VPN protection
+func Protect(uid int) bool {
+    return true
+}" > v2ray/v5/mobile/mobile.go
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: "1.21"
 
@@ -29,26 +48,20 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      - name: Install Android SDK & NDK (manual)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip wget
-          wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
-          mkdir -p $HOME/android/cmdline-tools
-          unzip -q cmdline-tools.zip -d $HOME/android/cmdline-tools
-          yes | $HOME/android/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$HOME/android "ndk;25.2.9519653" "platforms;android-21"
-          echo "ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
-          echo "$HOME/android/cmdline-tools/cmdline-tools/bin" >> $GITHUB_PATH
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
 
-      - name: Build AAR (arm64)
+      - name: Build AAR
         run: |
-          cd AndroidLibXrayLite
+          cd v2ray/v5/mobile
+          go mod init mobile
           go mod tidy
-          # build arm64-only aar
-          GOOS=android GOARCH=arm64 gomobile bind -v -target=android -androidapi=21 -o ../libv2ray-arm64.aar .
+          gomobile bind -target=android/arm64 -androidapi=21 -o ../../../libv2ray.aar .
 
-      - name: Upload AAR artifact
+      - name: Upload libv2ray.aar
         uses: actions/upload-artifact@v4
         with:
-          name: libv2ray-arm64.aar
-          path: libv2ray-arm64.aar
+          name: libv2ray
+          path: libv2ray.aar
