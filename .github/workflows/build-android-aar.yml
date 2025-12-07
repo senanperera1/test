@@ -49,10 +49,12 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Force TUN Import
+      - name: Force TUN Import (New File)
         run: |
-          # Append the import to the main library file to force TUN registration
-          echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> libv2ray.go
+          # Create a NEW file to force-import the TUN package.
+          # This avoids messing up existing files.
+          echo 'package libv2ray' > force_tun.go
+          echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
 
       - name: Build arm64 AAR
         run: |
