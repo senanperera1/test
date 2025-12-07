@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite (HEAD + Force TUN)
+name: Build AndroidLibXrayLite AAR (Manual Clone Fixed)
 
 on:
   workflow_dispatch:
@@ -7,13 +7,6 @@ jobs:
   build-aar:    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (Latest)
-        uses: actions/checkout@v4
-        with:
-          repository: 2dust/AndroidLibXrayLite
-          submodules: true
-          fetch-depth: 0
-
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -23,7 +16,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22" # Use new Go for new Xray
+          go-version: "1.21"
 
       - name: Install gomobile
         run: |
@@ -48,21 +41,26 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Force TUN Import
+      - name: Manual Clone & Checkout
         run: |
-          # We inject the import into a new file.
-          # We DO NOT run go mod tidy or get, assuming the repo's go.mod is sufficient or vendor is present.
-          echo 'package libv2ray' > force_tun.go
-          echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
-          # If this fails, it means proxy/tun moved. But for recent Xray (v1.8+), it IS here.
+          # Clone into 'source_code' directory to avoid "not empty" errors
+          git clone https://github.com/2dust/AndroidLibXrayLite.git source_code
+          
+          cd source_code
+          # Checkout v1.0.25 commit hash explicitly
+          git checkout 6f77295
+          git status
 
       - name: Build arm64 AAR
+        working-directory: source_code
         run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
-          ls -lh *.aar
+          go mod tidy || true
+          # Build with TUN tag. v1.0.25 has correct imports naturally.
+          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
+          ls -lh ../libv2ray.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: libv2ray-aar-arm64
-          path: "*.aar"
+          path: "libv2ray.aar"
