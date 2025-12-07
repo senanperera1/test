@@ -1,4 +1,6 @@
-name: Build Custom Xray Wrapper (Final Fix)on:
+name: Build Custom Xray Wrapper (Final Fix)
+
+on:
   workflow_dispatch:
 
 jobs:
