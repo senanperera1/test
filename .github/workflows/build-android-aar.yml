@@ -1,4 +1,4 @@
-name: Build Custom Xray Wrapper (Modern Xray)
+name: Build Custom Xray Wrapper (Latest Fix)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22" # Latest Go for Latest Xray
+          go-version: "1.22"
 
       - name: Install gomobile
         run: |
@@ -49,7 +49,7 @@ jobs:
           
           go mod init github.com/myuser/libv2ray
           
-          # Create libv2ray.go
+          # Create libv2ray.go with CORRECT imports for Latest Xray
           cat <<EOF > libv2ray.go
           package libv2ray
 
@@ -57,19 +57,13 @@ jobs:
               "fmt"
               "strings"
               
-              // Import distro/all which should register standard modules
+              // Import distro/all to register ALL standard features (including TUN)
               _ "github.com/xtls/xray-core/main/distro/all"
-              
-              // Explicitly import standard inbounds/outbounds just in case
-              _ "github.com/xtls/xray-core/app/proxyman/inbound"
-              _ "github.com/xtls/xray-core/app/proxyman/outbound"
-              
-              // Import config loaders
-              _ "github.com/xtls/xray-core/infra/conf/command"
               
               core "github.com/xtls/xray-core/core"
               "github.com/xtls/xray-core/infra/conf/serial"
               
+              // Force bind to ensure gomobile finds it
               _ "golang.org/x/mobile/bind"
           )
 
@@ -83,11 +77,13 @@ jobs:
           }
 
           func (v *V2RayPoint) RunLoop(configContent string) error {
+              // Load config from JSON string
               config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
               if err != nil {
                   return fmt.Errorf("failed to load config: %v", err)
               }
 
+              // Create Xray instance
               server, err := core.New(config)
               if err != nil {
                   return fmt.Errorf("failed to create instance: %v", err)
@@ -116,7 +112,7 @@ jobs:
           }
           EOF
           
-          # Get latest deps
+          # Get latest dependencies
           go get golang.org/x/mobile/bind
           go get github.com/xtls/xray-core@latest
           
@@ -125,7 +121,7 @@ jobs:
       - name: Build Custom AAR
         working-directory: mywrapper
         run: |
-          # Build with tags "json,tun". Note: newer Xray might not need "tun" tag if imported correctly, but it hurts nothing.
+          # Build with tags to ensure modules are included
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
           ls -lh ../libv2ray.aar
 
