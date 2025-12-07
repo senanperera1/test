@@ -30,11 +30,10 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
 
-      - name: Setup Android SDK + NDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 21
-          ndk-version: "26.1.10909125"
+      - name: Install Android SDK + NDK side-by-side
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-21" "ndk;26.1.10909125"
 
       - name: Build AAR with TUN
         working-directory: Xray-core
