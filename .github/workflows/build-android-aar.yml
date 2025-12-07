@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite AAR (Manual Clone v1.0.25)
+name: Build AndroidLibXrayLite AAR (Manual Clone Fixed)
 
 on:
   workflow_dispatch:
@@ -8,8 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -44,24 +43,23 @@ jobs:
 
       - name: Manual Clone & Checkout
         run: |
-          # Manually clone to avoid actions/checkout ref issues
-          git clone https://github.com/2dust/AndroidLibXrayLite.git .
+          # Clone into 'source_code' directory to avoid "not empty" errors
+          git clone https://github.com/2dust/AndroidLibXrayLite.git source_code
           
-          # Checkout the specific commit for v1.0.25 (Stable with TUN)
+          cd source_code
+          # Checkout v1.0.25 commit
           git checkout 6f77295
-          
-          # Verify
           git status
 
       - name: Build arm64 AAR
+        working-directory: source_code  # Run inside the cloned directory
         run: |
-          # Build with TUN tag. v1.0.25 has correct imports naturally.
           go mod tidy || true
-          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
-          ls -lh *.aar
+          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
+          ls -lh ../libv2ray.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: libv2ray-aar-arm64
-          path: "*.aar"
+          path: "libv2ray.aar"
