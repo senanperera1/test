@@ -1,40 +1,47 @@
 name: Build Xray AAR with TUN
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # run manually from Actions tab
   push:
-    branches: [ "tun-build" ]
+    branches: [ "tun-build" ]   # only trigger on a dedicated branch
 
 jobs:
   build-aar:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout your repo (not strictly needed, but keeps Actions happy)
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Clone upstream Xray-core
       - name: Clone Xray-core
         run: |
           git clone https://github.com/XTLS/Xray-core.git
           cd Xray-core
           git submodule update --init --recursive
 
+      # Setup Go
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.21"
 
+      # Install gomobile and gobind
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
 
-      - name: Install Android SDK + NDK side-by-side
-        run: |
-          yes | sdkmanager --licenses
-          sdkmanager "platforms;android-21" "ndk;26.1.10909125"
+      # Setup Android SDK + NDK (side-by-side)
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 21
+          ndk-version: "26.1.10909125"
 
+      # Build AAR with TUN enabled
       - name: Build AAR with TUN
         working-directory: Xray-core
         env:
@@ -44,6 +51,7 @@ jobs:
           gomobile bind -target=android -androidapi=21 ./main
           ls -lh *.aar *.jar || true
 
+      # Upload artifact
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
