@@ -1,4 +1,4 @@
-name: Build AndroidLibXrayLite (HEAD + Force TUN)
+name: Build AndroidLibXrayLite (Fixed Core Version)
 
 on:
   workflow_dispatch:
@@ -10,8 +10,7 @@ jobs:
     steps:
       - name: Checkout Latest
         uses: actions/checkout@v4
-        with:
-          repository: 2dust/AndroidLibXrayLite
+        with:          repository: 2dust/AndroidLibXrayLite
           submodules: true
           fetch-depth: 0
 
@@ -24,7 +23,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.21" # Use 1.21 for better compat with 1.8.4
 
       - name: Install gomobile
         run: |
@@ -49,12 +48,17 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: Force TUN Import (New File)
+      - name: Force Compatible Xray Core & Inject TUN
         run: |
-          # Create a NEW file to force-import the TUN package.
-          # This avoids messing up existing files.
+          # 1. Force downgrade Xray Core to v1.8.4 to ensure proxy/tun exists
+          go get github.com/xtls/xray-core@v1.8.4
+          
+          # 2. Inject the import into a new file
           echo 'package libv2ray' > force_tun.go
           echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
+          
+          # 3. Tidy up to sync go.mod
+          go mod tidy
 
       - name: Build arm64 AAR
         run: |
