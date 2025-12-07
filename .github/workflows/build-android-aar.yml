@@ -42,14 +42,28 @@ jobs:
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           
           yes | sdkmanager --licenses
+          # Install NDK 26.x which is compatible with recent Go versions
           sdkmanager "platforms;android-21" "ndk;26.1.10909125" "build-tools;34.0.0"
 
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
+      - name: Inject TUN Import
+        run: |
+          # Create a dummy Go file to force-import the TUN package.
+          # This ensures the 'tun' protocol is registered in Xray core.
+          echo 'package libv2ray' > force_tun.go
+          echo 'import _ "github.com/xtls/xray-core/proxy/tun"' >> force_tun.go
+          echo 'import _ "github.com/xtls/xray-core/infra/conf/command"' >> force_tun.go
+          
+          # Tidy up dependencies to ensure the new imports are resolved
+          go mod tidy
+
       - name: Build arm64 AAR with TUN support
         run: |
+          # Build the current directory (package libv2ray)
+          # We add -tags "json,tun" for good measure, though the explicit import above does the heavy lifting.
           gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o libv2ray.aar .
           ls -lh *.aar
 
