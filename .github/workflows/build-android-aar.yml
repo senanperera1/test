@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (arm64 only, keep .so in native/)
+name: Build tun2socks AAR (arm64 only, final)
 
 on:
   workflow_dispatch:
@@ -36,7 +36,6 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs/arm64-v8a}
-          # Copy your .so into the ABI folder so Gradle accepts it
           cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
           # Java wrapper
@@ -51,17 +50,6 @@ jobs:
 
               public static native int start(int tunFd, String proxyUrl);
               public static native int stop();
-              public static native int startWithParams(
-                  int tunFd,
-                  String proxyUrl,
-                  String tunIp4,
-                  int tunPrefixLen,
-                  int mtu,
-                  boolean enableUdp,
-                  boolean enableIpv6,
-                  String dns1,
-                  String dns2
-              );
               public static native String coreInfo();
           }
           EOF
@@ -80,12 +68,10 @@ jobs:
 
           typedef int (*start_fn_fd_url)(int fd, const char *url);
           typedef int (*stop_fn)();
-          typedef int (*start_fn_full)(int fd, const char *url, const char *ip4, int prefix, int mtu, int udp, int ipv6, const char *dns1, const char *dns2);
           typedef const char* (*info_fn)();
 
           static void *handle = NULL;
           static start_fn_fd_url core_start_fd_url = NULL;
-          static start_fn_full core_start_full = NULL;
           static stop_fn core_stop = NULL;
           static info_fn core_info_fn = NULL;
 
@@ -100,15 +86,12 @@ jobs:
               if (!core_start_fd_url) core_start_fd_url = (start_fn_fd_url)dlsym(handle, "start_tun2socks");
               if (!core_start_fd_url) core_start_fd_url = (start_fn_fd_url)dlsym(handle, "tun2socks_run");
 
-              core_start_full = (start_fn_full)dlsym(handle, "tun2socks_start_with_params");
-              if (!core_start_full) core_start_full = (start_fn_full)dlsym(handle, "tun2socks_start_ex");
-
               core_stop = (stop_fn)dlsym(handle, "tun2socks_stop");
               if (!core_stop) core_stop = (stop_fn)dlsym(handle, "stop_tun2socks");
 
               core_info_fn = (info_fn)dlsym(handle, "tun2socks_info");
 
-              LOGI("Symbols: start_fd_url=%p start_full=%p stop=%p info=%p", core_start_fd_url, core_start_full, core_stop, core_info_fn);
+              LOGI("Symbols: start=%p stop=%p info=%p", core_start_fd_url, core_stop, core_info_fn);
           }
 
           JNIEXPORT jint JNICALL
