@@ -20,7 +20,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK and NDK r26c
+      - name: Install Android SDK + NDK r26c
         uses: android-actions/setup-android@v3
         with:
           api-level: 34
@@ -28,8 +28,10 @@ jobs:
           cmake: 3.22.1
           components: build-tools;34.0.0
 
-      - name: Set ANDROID_NDK_HOME
-        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+      - name: Export ANDROID_NDK_HOME
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "NDK_LLVM_BIN=$ANDROID_HOME/ndk/26.1.10909125/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
 
       - name: Set up Go 1.22
         uses: actions/setup-go@v5
@@ -37,39 +39,98 @@ jobs:
           go-version: '1.22'
 
       - name: Clone tun2socks
-        run: git clone https://github.com/xjasonlyu/tun2socks.git
+        run: |
+          git clone https://github.com/xjasonlyu/tun2socks.git
+          echo "Repo: $(git -C tun2socks rev-parse --short HEAD)"
 
+      # arm64-v8a
       - name: Build libtun2socks.so (arm64-v8a)
         env:
           ANDROID_API: '21'
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
           set -e
           cd tun2socks
-          export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
-          export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++"
+
           export CGO_ENABLED=1
           export GOOS=android
           export GOARCH=arm64
+
+          # Use generic clang and set target explicitly
+          export CC="$NDK_LLVM_BIN/clang"
+          export CXX="$NDK_LLVM_BIN/clang++"
+          export CGO_CFLAGS="--target=aarch64-linux-android${ANDROID_API}"
+          export CGO_CXXFLAGS="--target=aarch64-linux-android${ANDROID_API}"
+          export CGO_LDFLAGS="--target=aarch64-linux-android${ANDROID_API}"
+
           mkdir -p ../out/jniLibs/arm64-v8a
           go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/arm64-v8a/libtun2socks.so .
           ls -lah ../out/jniLibs/arm64-v8a
 
+      # armeabi-v7a
       - name: Build libtun2socks.so (armeabi-v7a)
         env:
           ANDROID_API: '21'
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
           set -e
           cd tun2socks
-          export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang"
-          export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang++"
+
           export CGO_ENABLED=1
           export GOOS=android
           export GOARCH=arm
+
+          export CC="$NDK_LLVM_BIN/clang"
+          export CXX="$NDK_LLVM_BIN/clang++"
+          export CGO_CFLAGS="--target=armv7a-linux-androideabi${ANDROID_API}"
+          export CGO_CXXFLAGS="--target=armv7a-linux-androideabi${ANDROID_API}"
+          export CGO_LDFLAGS="--target=armv7a-linux-androideabi${ANDROID_API}"
+
           mkdir -p ../out/jniLibs/armeabi-v7a
           go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/armeabi-v7a/libtun2socks.so .
           ls -lah ../out/jniLibs/armeabi-v7a
+
+      # x86_64 (good for emulators)
+      - name: Build libtun2socks.so (x86_64)
+        env:
+          ANDROID_API: '21'
+        run: |
+          set -e
+          cd tun2socks
+
+          export CGO_ENABLED=1
+          export GOOS=android
+          export GOARCH=amd64
+
+          export CC="$NDK_LLVM_BIN/clang"
+          export CXX="$NDK_LLVM_BIN/clang++"
+          export CGO_CFLAGS="--target=x86_64-linux-android${ANDROID_API}"
+          export CGO_CXXFLAGS="--target=x86_64-linux-android${ANDROID_API}"
+          export CGO_LDFLAGS="--target=x86_64-linux-android${ANDROID_API}"
+
+          mkdir -p ../out/jniLibs/x86_64
+          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/x86_64/libtun2socks.so .
+          ls -lah ../out/jniLibs/x86_64
+
+      # x86 (optional emulator ABI)
+      - name: Build libtun2socks.so (x86)
+        env:
+          ANDROID_API: '21'
+        run: |
+          set -e
+          cd tun2socks
+
+          export CGO_ENABLED=1
+          export GOOS=android
+          export GOARCH=386
+
+          export CC="$NDK_LLVM_BIN/clang"
+          export CXX="$NDK_LLVM_BIN/clang++"
+          export CGO_CFLAGS="--target=i686-linux-android${ANDROID_API}"
+          export CGO_CXXFLAGS="--target=i686-linux-android${ANDROID_API}"
+          export CGO_LDFLAGS="--target=i686-linux-android${ANDROID_API}"
+
+          mkdir -p ../out/jniLibs/x86
+          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/x86/libtun2socks.so .
+          ls -lah ../out/jniLibs/x86
 
       - name: Package jniLibs layout
         run: |
@@ -84,4 +145,6 @@ jobs:
           path: |
             out/jniLibs/arm64-v8a/libtun2socks.so
             out/jniLibs/armeabi-v7a/libtun2socks.so
+            out/jniLibs/x86_64/libtun2socks.so
+            out/jniLibs/x86/libtun2socks.so
             out/tun2socks-jniLibs.zip
