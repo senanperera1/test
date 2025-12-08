@@ -1,12 +1,10 @@
-name: Build SagerNet Tun2Socks AAR (Final Corrected)
+name: Build SagerNet Tun2Socks AAR (Corrected)
 
 on:
   workflow_dispatch:
 
-jobs:
-  build-aar:
+jobs:build-aar:
     runs-on: ubuntu-latest
-
     steps:
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -46,7 +44,7 @@ jobs:
           go get github.com/eycorsican/go-tun2socks
           go get golang.org/x/mobile/bind
           
-          # Create the Go wrapper file with the CORRECT function name
+          # Create the Go wrapper file with the CORRECT API calls
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
@@ -61,22 +59,23 @@ jobs:
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
               
-              // FIX: The correct function name is NewHandler, not NewSocks5Handler
-              proxy := socks.NewHandler(proxyAddr, uint16(proxyPort))
+              // The correct function name is NewSocks5Handler
+              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
 
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
               core.RegisterOutputFn(func(data []byte) (int, error) {
                   return f.Write(data)
               })
+
               core.Start()
           }
 
-          // Stop the tun2socks loop
+          // Stop the tun2socks core loop
           func Stop() {
               core.Stop()
           }
-          EOF
+EOF
           
           go mod tidy
 
