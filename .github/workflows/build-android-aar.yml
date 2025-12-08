@@ -18,7 +18,7 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: Install gomobile and dependencies
+      - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
@@ -34,32 +34,27 @@ jobs:
 
       - name: Create Tun2Socks Wrapper from xjasonlyu/tun2socks
         run: |
-          # 1. Create a workspace
           mkdir -p workspace/wrapper
           cd workspace
 
-          # 2. Clone the user's chosen repository
+          # 1. Clone the repository you chose
           git clone https://github.com/xjasonlyu/tun2socks.git library_src
           
-          # 3. Navigate into our wrapper directory
+          # 2. Navigate into our wrapper directory
           cd wrapper
           go mod init github.com/myuser/tun2socks
           
-          # 4. Point to the local source code of the real library
+          # 3. Tell Go to use the local source code for the library
           go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../library_src
           
-          # 5. Create our Go wrapper file that calls the library's internal functions
+          # 4. Create our Go wrapper file
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
           import (
               "context"
               "fmt"
-              "io"
-              "os"
-              "time"
               "log"
-
               "github.com/xjasonlyu/tun2socks/v2/core"
               "github.com/xjasonlyu/tun2socks/v2/proxy"
               "github.com/xjasonlyu/tun2socks/v2/tun"
@@ -71,39 +66,32 @@ jobs:
               cancel context.CancelFunc
           )
 
-          // This function replicates the core logic of xjasonlyu/tun2socks's main.go
           func Start(fd int, proxyURL string) error {
               ctx, cancel = context.WithCancel(context.Background())
 
-              // Open TUN device from file descriptor
-              mtu := 1500 // A standard MTU, can be adjusted
+              mtu := 1500
               tunDev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
               if err != nil {
                   return fmt.Errorf("failed to open tun device: %w", err)
               }
 
-              // Create proxy handler
               proxyHandler, err := proxy.New(proxyURL)
               if err != nil {
                   return fmt.Errorf("failed to create proxy handler: %w", err)
               }
 
-              // Create lwIP stack
               lwipStack := core.NewLWIPStack()
 
-              // Register handlers
               core.RegisterTCPConnHandler(proxyHandler)
               core.RegisterUDPConnHandler(proxyHandler)
               core.RegisterOutputFn(func(data []byte, writeCount int) {
                   tunDev.Write(data[:writeCount])
               })
 
-              log.Println("xjasonlyu/tun2socks is running")
+              log.Println("xjasonlyu/tun2socks library is running")
 
-              // Start the event loop
               go lwipStack.Start()
               
-              // Read from TUN device
               packet := make([]byte, mtu)
               for {
                   select {
@@ -118,16 +106,16 @@ jobs:
                   }
               }
           }
-
+          
           func Stop() {
               if cancel != nil {
                   cancel()
               }
-              log.Println("xjasonlyu/tun2socks is stopping")
+              log.Println("xjasonlyu/tun2socks library is stopping")
           }
-          EOF
+EOF
           
-          # 6. Get dependencies
+          # 5. Get dependencies
           go get golang.org/x/mobile/bind
           go get github.com/xjasonlyu/tun2socks/v2
           go mod tidy
