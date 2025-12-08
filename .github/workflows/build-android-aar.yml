@@ -25,9 +25,13 @@ jobs:
 
       - name: Prepare Android Library module
         run: |
+          # Create folder structure
           mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
+
+          # Copy your uploaded .so file into jniLibs
           cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
+          # Minimal build.gradle for the library
           cat <<'EOF' > tun2socks-android/build.gradle
           plugins {
               id 'com.android.library'
@@ -50,8 +54,10 @@ jobs:
           }
           EOF
 
+          # Settings.gradle
           echo "include ':tun2socks-android'" > settings.gradle
 
+          # Top-level build.gradle
           cat <<'EOF' > build.gradle
           buildscript {
               repositories {
@@ -69,6 +75,9 @@ jobs:
               }
           }
           EOF
+
+      - name: Initialize Gradle wrapper
+        run: gradle wrapper --gradle-version 8.2
 
       - name: Build AAR
         run: ./gradlew :tun2socks-android:assembleRelease
