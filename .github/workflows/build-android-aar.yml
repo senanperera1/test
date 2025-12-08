@@ -1,5 +1,4 @@
 name: Build Final tun2socks AAR
-
 on:
   workflow_dispatch:
 
@@ -8,7 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set up JDK 17
-        uses: actions/setup-java@v4        with:
+        uses: actions/setup-java@v4
+        with:
           distribution: 'temurin'
           java-version: '17'
 
@@ -23,31 +23,26 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-      
-      - name: Install NDK
-        run: sdkmanager "ndk;26.1.10909125"
-
-      - name: Clone xjasonlyu/tun2socks repository
-        uses: actions/checkout@v4
-        with:
-          repository: xjasonlyu/tun2socks
-          path: tun2socks_source
-          
-      - name: Build and Package AAR
+      - name: Create Wrapper and Build AAR from xjasonlyu/tun2socks
         run: |
-          set -e
+          # 1. Create a workspace
+          mkdir -p workspace/wrapper
+          cd workspace
+
+          # 2. Clone the repository you chose
+          git clone https://github.com/xjasonlyu/tun2socks.git library_src
           
-          # --- 1. Create Go Wrapper ---
-          mkdir -p wrapper
+          # 3. Navigate into our wrapper directory
           cd wrapper
-          
           go mod init github.com/myuser/tun2socks
-          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../tun2socks_source
           
+          # 4. Tell Go to use the local source code for the real library
+          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../library_src
+          
+          # 5. Create our Go wrapper file to expose all necessary functions
           cat <<'EOF' > tun2socks.go
           package tun2socks
+
           import (
               "context"
               "fmt"
@@ -57,50 +52,87 @@ jobs:
               "github.com/xjasonlyu/tun2socks/v2/tun"
               _ "golang.org/x/mobile/bind"
           )
+
           var (
               ctx    context.Context
               cancel context.CancelFunc
           )
-          func Start(fd int, proxyURL string) error {
+
+          // Start is the entry point for the library. It is a blocking call.
+          // It returns a non-zero error code on failure.
+          func Start(fd int, proxyURL string) int {
               ctx, cancel = context.WithCancel(context.Background())
+
               mtu := 1500
               tunDev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
-              if err != nil { return fmt.Errorf("failed to open tun device: %w", err) }
+              if err != nil {
+                  log.Printf("failed to open tun device: %v", err)
+                  return 1
+              }
+
               proxyHandler, err := proxy.New(proxyURL)
-              if err != nil { return fmt.Errorf("failed to create proxy handler: %w", err) }
+              if err != nil {
+                  log.Printf("failed to create proxy handler: %v", err)
+                  return 2
+              }
+
               lwipStack := core.NewLWIPStack()
+
               core.RegisterTCPConnHandler(proxyHandler)
               core.RegisterUDPConnHandler(proxyHandler)
-              core.RegisterOutputFn(func(data []byte, writeCount int) { tunDev.Write(data[:writeCount]) })
+              core.RegisterOutputFn(func(data []byte, writeCount int) {
+                  tunDev.Write(data[:writeCount])
+              })
+
               log.Println("xjasonlyu/tun2socks library is running")
+
               go lwipStack.Start()
+              
               packet := make([]byte, mtu)
               for {
                   select {
                   case <-ctx.Done():
-                      return nil
+                      return 0 // Graceful stop
                   default:
                       n, err := tunDev.Read(packet)
-                      if err != nil { return err }
+                      if err != nil {
+                          log.Printf("error reading from tun device: %v", err)
+                          return 3
+                      }
                       lwipStack.Write(packet[:n])
                   }
               }
           }
-          func Stop() {
-              if cancel != nil { cancel() }
-              log.Println("xjasonlyu/tun2socks library is stopping")
+          
+          // Stop gracefully shuts down the tun2socks loop.
+          // Returns 0 on success.
+          func Stop() int {
+              if cancel != nil {
+                  cancel()
+                  log.Println("xjasonlyu/tun2socks library is stopping")
+                  return 0
+              }
+              return 1 // Not running
+          }
+
+          // Version returns the library version.
+          func Version() string {
+              // Placeholder version, as the real one is a constant in the main package
+              return "xjasonlyu/tun2socks-v2"
           }
 EOF
-
-          # --- 2. Get Dependencies ---
+          
+          # 6. Get dependencies for our wrapper
           go get golang.org/x/mobile/bind
           go get github.com/xjasonlyu/tun2socks/v2
           go mod tidy
-          
-          # --- 3. Build AAR with gomobile ---
-          # This command creates the .so, the JNI bindings, and the .aar package
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../tun2socks.aar .
-          ls -lh ../tun2socks.aar
+
+      - name: Build Tun2Socks AAR
+        working-directory: workspace/wrapper
+        run: |
+          # This is the command that builds the AAR and generates the JNI "wiring"
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../../tun2socks.aar .
+          ls -lh ../../tun2socks.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
