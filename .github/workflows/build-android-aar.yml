@@ -1,14 +1,31 @@
-name: Build tun2socks Binary (Fixed)
+name: Build All-In-One Xray+Tun2Socks Library
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-aar:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install NDK
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Install Android SDK + NDK
         run: |
           mkdir -p $HOME/android-sdk
           export ANDROID_HOME=$HOME/android-sdk
@@ -16,22 +33,107 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Clone badvpn Repository
-        uses: actions/checkout@v4
-        with:
-          repository: ambrop72/badvpn
-          
-      - name: Build tun2socks for arm64-v8a
+      - name: Create All-In-One Wrapper
         run: |
-          mkdir -p build/arm64-v8a
-          # FIX: Added -I . to tell the compiler where to find the header files
-          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-            -I . \
-            -o build/arm64-v8a/tun2socks \
-            tun2socks/tun2socks.c
+          mkdir all-in-one
+          cd all-in-one
+          go mod init github.com/myuser/allinone
+          
+          # Get the necessary dependencies
+          go get github.com/eycorsican/go-tun2socks@v2.4.1
+          go get github.com/xtls/xray-core@v1.8.4
+          
+          # Create the Go source file that combines both
+          cat <<'EOF' > library.go
+          package allinone
 
-      - name: Upload Binary
+          import (
+              "fmt"
+              "io"
+              "os"
+              "strings"
+              "time"
+
+              "github.com/eycorsican/go-tun2socks/core"
+              "github.com/eycorsican/go-tun2socks/proxy/socks"
+              
+              _ "github.com/xtls/xray-core/main/distro/all"
+              _ "github.com/xtls/xray-core/main/json"
+              xcore "github.com/xtls/xray-core/core"
+              "github.com/xtls/xray-core/infra/conf/serial"
+          )
+
+          var xrayInstance *xcore.Instance
+          var tun2socksRunning = false
+
+          type Controller struct{}
+
+          func NewController() *Controller {
+              return &Controller{}
+          }
+
+          func (c *Controller) Start(fd int, configContent string) {
+              if tun2socksRunning {
+                  return
+              }
+
+              // 1. Start Xray-core in a goroutine
+              go func() {
+                  config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
+                  if err != nil {
+                      fmt.Printf("failed to load xray config: %v\n", err)
+                      return
+                  }
+                  instance, err := xcore.New(config)
+                  if err != nil {
+                      fmt.Printf("failed to create xray instance: %v\n", err)
+                      return
+                  }
+                  xrayInstance = instance
+                  if err := instance.Start(); err != nil {
+                      fmt.Printf("failed to start xray instance: %v\n", err)
+                  }
+              }()
+
+              // Give Xray a moment to start up the SOCKS server
+              time.Sleep(1 * time.Second)
+
+              // 2. Configure and start go-tun2socks
+              f := os.NewFile(uintptr(fd), "tun")
+
+              proxy := socks.NewSocks5Handler("127.0.0.1", 10808)
+
+              core.RegisterTCPConnHandler(proxy)
+              core.RegisterUDPConnHandler(proxy)
+              core.RegisterOutputFn(func(data []byte) (int, error) {
+                  return f.Write(data)
+              })
+
+              tun2socksRunning = true
+              
+              // This is a blocking call that runs the tun2socks event loop
+              core.Start()
+          }
+
+          func (c *Controller) Stop() {
+              if xrayInstance != nil {
+                  xrayInstance.Close()
+              }
+              core.Stop()
+              tun2socksRunning = false
+          }
+          EOF
+          
+          go mod tidy
+
+      - name: Build All-In-One AAR
+        working-directory: all-in-one
+        run: |
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
+          ls -lh ../libv2ray.aar
+
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-binary-arm64
-          path: build/arm64-v8a/tun2socks
+          name: libv2ray-all-in-one-aar
+          path: "libv2ray.aar"
