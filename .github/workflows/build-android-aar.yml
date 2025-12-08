@@ -7,7 +7,8 @@ jobs:
   build-aar:
     runs-on: ubuntu-latest
 
-    steps:      - name: Setup Java
+    steps:
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -38,14 +39,14 @@ jobs:
           cd tun2socks
           go mod init github.com/myuser/tun2socks
           
-          # FIX: Use 'go mod edit -replace' to handle the module path mismatch
+          # This 'replace' directive is the fix for the module path mismatch.
           go mod edit -replace=github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
           
-          # Now, get the module using its *original* declared path and get the bind dependency
+          # Now, get the module using its *original* declared path and get the bind dependency.
           go get github.com/eycorsican/go-tun2socks
           go get golang.org/x/mobile/bind
           
-          # Create the Go wrapper file
+          # Create the Go wrapper file with the blank bind import.
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
@@ -54,7 +55,7 @@ jobs:
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
               
-              // CRITICAL: This blank import forces Go to keep the 'bind' package.
+              // This blank import forces Go to keep the 'bind' package.
               _ "golang.org/x/mobile/bind"
           )
 
