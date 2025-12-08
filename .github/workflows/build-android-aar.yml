@@ -1,4 +1,4 @@
-name: Build tun2socks AAR with JNI bridge
+name: Build exhaustive tun2socks AAR (multi-ABI, diagnostics, zero-room-for-error)
 
 on:
   workflow_dispatch:
@@ -6,88 +6,206 @@ on:
 jobs:
   build-aar:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_NDK_VERSION: 25.1.8937393
+      ANDROID_BUILD_TOOLS: 34.0.0
+      ANDROID_COMPILE_SDK: 34
+      JAVA_VERSION: '17'
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }}
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          components: build-tools;34.0.0
+          api-level: ${{ env.ANDROID_COMPILE_SDK }}
+          components: build-tools;${{ env.ANDROID_BUILD_TOOLS }}
 
-      - name: Prepare Android Library module
+      - name: Verify prebuilt core libs exist
         run: |
-          # Create folder structure
-          mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
-          mkdir -p tun2socks-android/src/main/java/com/example/tun2socks
-          mkdir -p tun2socks-android/src/main/cpp
+          set -euxo pipefail
+          # Expect prebuilt libs present under native/ per ABI
+          # You MUST provide these in your repo:
+          # native/arm64-v8a/libtun2socks.so
+          # native/armeabi-v7a/libtun2socks.so
+          # native/x86/libtun2socks.so
+          # native/x86_64/libtun2socks.so
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f native/${abi}/libtun2socks.so || { echo "Missing native/${abi}/libtun2socks.so"; exit 1; }
+          done
 
-          # Copy your prebuilt libtun2socks.so into jniLibs
-          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
+      - name: Prepare Android library module with exhaustive logging
+        run: |
+          set -euxo pipefail
 
-          # Java wrapper class
+          # Create structure
+          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}}
+
+          # Copy prebuilt core libs (all ABIs)
+          cp native/arm64-v8a/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
+          cp native/armeabi-v7a/libtun2socks.so tun2socks-android/src/main/jniLibs/armeabi-v7a/
+          cp native/x86/libtun2socks.so tun2socks-android/src/main/jniLibs/x86/
+          cp native/x86_64/libtun2socks.so tun2socks-android/src/main/jniLibs/x86_64/
+
+          # Java wrapper (namespace fixed, exhaustive native signatures)
           cat <<'EOF' > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java
           package com.example.tun2socks;
 
           public class Tun2Socks {
               static {
-                  System.loadLibrary("tun2socks_jni"); // JNI bridge
-                  System.loadLibrary("tun2socks");     // prebuilt core
+                  System.loadLibrary("tun2socks_jni");
+                  System.loadLibrary("tun2socks");
               }
 
-              public static native int start(int fd, String proxyUrl);
+              // Basic run/stop
+              public static native int start(int tunFd, String proxyUrl);
               public static native int stop();
+
+              // Extended entry points for cores that want more params
+              public static native int startWithParams(
+                  int tunFd,
+                  String proxyUrl,
+                  String tunIp4,
+                  int tunPrefixLen,
+                  int mtu,
+                  boolean enableUdp,
+                  boolean enableIpv6,
+                  String dns1,
+                  String dns2
+              );
+
+              // Diagnostics
+              public static native String coreInfo();
           }
           EOF
 
-          # JNI bridge C file
+          # JNI bridge with maximal logging, multiple symbol fallbacks, errno prints
           cat <<'EOF' > tun2socks-android/src/main/cpp/tun2socks_jni.c
           #include <jni.h>
           #include <dlfcn.h>
+          #include <android/log.h>
+          #include <errno.h>
+          #include <string.h>
 
-          typedef int (*tun2socks_start_fn)(int fd, const char *url);
-          typedef int (*tun2socks_stop_fn)();
+          #define LOG_TAG "Tun2SocksJNI"
+          #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+          #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+          #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-          static tun2socks_start_fn core_start = NULL;
-          static tun2socks_stop_fn core_stop = NULL;
+          typedef int (*start_fn_fd_url)(int fd, const char *url);
+          typedef int (*stop_fn)();
+
+          // Alternative signatures some cores use
+          typedef int (*start_fn_full)(int fd, const char *url, const char *ip4, int prefix, int mtu, int udp, int ipv6, const char *dns1, const char *dns2);
+          typedef const char* (*info_fn)();
+
+          static void *handle = NULL;
+          static start_fn_fd_url core_start_fd_url = NULL;
+          static start_fn_full core_start_full = NULL;
+          static stop_fn core_stop = NULL;
+          static info_fn core_info_fn = NULL;
 
           static void ensure_loaded() {
-              if (core_start == NULL || core_stop == NULL) {
-                  void *handle = dlopen("libtun2socks.so", RTLD_NOW);
-                  if (handle) {
-                      core_start = (tun2socks_start_fn)dlsym(handle, "tun2socks_start");
-                      core_stop  = (tun2socks_stop_fn)dlsym(handle, "tun2socks_stop");
-                  }
+              if (handle != NULL) return;
+              handle = dlopen("libtun2socks.so", RTLD_NOW);
+              if (!handle) {
+                  LOGE("dlopen failed: %s", dlerror());
+                  return;
               }
+              // Try common symbol names
+              core_start_fd_url = (start_fn_fd_url)dlsym(handle, "tun2socks_start");
+              if (!core_start_fd_url) core_start_fd_url = (start_fn_fd_url)dlsym(handle, "start_tun2socks");
+              if (!core_start_fd_url) core_start_fd_url = (start_fn_fd_url)dlsym(handle, "tun2socks_run");
+
+              core_start_full = (start_fn_full)dlsym(handle, "tun2socks_start_with_params");
+              if (!core_start_full) core_start_full = (start_fn_full)dlsym(handle, "tun2socks_start_ex");
+
+              core_stop = (stop_fn)dlsym(handle, "tun2socks_stop");
+              if (!core_stop) core_stop = (stop_fn)dlsym(handle, "stop_tun2socks");
+
+              core_info_fn = (info_fn)dlsym(handle, "tun2socks_info");
+
+              LOGI("dlsym results: start_fd_url=%p start_full=%p stop=%p info=%p", core_start_fd_url, core_start_full, core_stop, core_info_fn);
           }
 
           JNIEXPORT jint JNICALL
           Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env, jclass clazz, jint fd, jstring proxyUrl) {
               ensure_loaded();
-              if (core_start == NULL) return -1;
+              if (!core_start_fd_url) {
+                  LOGE("No start(fd,url) symbol found");
+                  return -2;
+              }
               const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
-              int result = core_start(fd, url);
+              LOGI("Calling core_start_fd_url(fd=%d, url=%s)", fd, url);
+              errno = 0;
+              int rc = core_start_fd_url(fd, url);
+              LOGI("core_start_fd_url rc=%d errno=%d (%s)", rc, errno, strerror(errno));
               (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
-              return result;
+              return rc;
+          }
+
+          JNIEXPORT jint JNICALL
+          Java_com_example_tun2socks_Tun2Socks_startWithParams(
+              JNIEnv *env, jclass clazz, jint fd, jstring proxyUrl,
+              jstring ip4, jint prefix, jint mtu, jboolean enableUdp, jboolean enableIpv6,
+              jstring dns1, jstring dns2
+          ) {
+              ensure_loaded();
+              if (!core_start_full) {
+                  LOGE("No startWithParams symbol found");
+                  return -2;
+              }
+              const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
+              const char *ip4c = (*env)->GetStringUTFChars(env, ip4, 0);
+              const char *dns1c = (*env)->GetStringUTFChars(env, dns1, 0);
+              const char *dns2c = (*env)->GetStringUTFChars(env, dns2, 0);
+
+              LOGI("Calling core_start_full(fd=%d, url=%s, ip4=%s, prefix=%d, mtu=%d, udp=%d, ipv6=%d, dns1=%s, dns2=%s)",
+                   fd, url, ip4c, (int)prefix, (int)mtu, enableUdp?1:0, enableIpv6?1:0, dns1c, dns2c);
+              errno = 0;
+              int rc = core_start_full(fd, url, ip4c, (int)prefix, (int)mtu, enableUdp?1:0, enableIpv6?1:0, dns1c, dns2c);
+              LOGI("core_start_full rc=%d errno=%d (%s)", rc, errno, strerror(errno));
+
+              (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
+              (*env)->ReleaseStringUTFChars(env, ip4, ip4c);
+              (*env)->ReleaseStringUTFChars(env, dns1, dns1c);
+              (*env)->ReleaseStringUTFChars(env, dns2, dns2c);
+              return rc;
           }
 
           JNIEXPORT jint JNICALL
           Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass clazz) {
               ensure_loaded();
-              if (core_stop == NULL) return -1;
-              return core_stop();
+              if (!core_stop) {
+                  LOGE("No stop() symbol found");
+                  return -2;
+              }
+              LOGI("Calling core_stop()");
+              errno = 0;
+              int rc = core_stop();
+              LOGI("core_stop rc=%d errno=%d (%s)", rc, errno, strerror(errno));
+              return rc;
+          }
+
+          JNIEXPORT jstring JNICALL
+          Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env, jclass clazz) {
+              ensure_loaded();
+              if (!core_info_fn) {
+                  return (*env)->NewStringUTF(env, "coreInfo() not exported");
+              }
+              const char *info = core_info_fn();
+              return (*env)->NewStringUTF(env, info ? info : "null");
           }
           EOF
 
-          # Android.mk for JNI bridge only
+          # Android.mk for multi-ABI JNI bridge
           cat <<'EOF' > tun2socks-android/src/main/cpp/Android.mk
           LOCAL_PATH := $(call my-dir)
 
@@ -98,7 +216,7 @@ jobs:
           include $(BUILD_SHARED_LIBRARY)
           EOF
 
-          # Library build.gradle
+          # build.gradle (library) with abiFilters and strict packaging
           cat <<'EOF' > tun2socks-android/build.gradle
           plugins {
               id 'com.android.library'
@@ -111,6 +229,10 @@ jobs:
               defaultConfig {
                   minSdk 21
                   targetSdk 34
+
+                  ndk {
+                      abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
+                  }
               }
 
               sourceSets {
@@ -120,15 +242,39 @@ jobs:
                   }
               }
 
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      ndk {
+                          debugSymbolLevel 'none'
+                      }
+                  }
+                  debug {
+                      ndk {
+                          debugSymbolLevel 'none'
+                      }
+                  }
+              }
+
               externalNativeBuild {
                   ndkBuild {
                       path "src/main/cpp/Android.mk"
                   }
               }
+
+              packagingOptions {
+                  jniLibs {
+                      useLegacyPackaging true
+                  }
+              }
+          }
+
+          dependencies {
+              // none
           }
           EOF
 
-          # Settings.gradle
+          # settings.gradle
           echo "include ':tun2socks-android'" > settings.gradle
 
           # Top-level build.gradle
@@ -153,11 +299,45 @@ jobs:
       - name: Initialize Gradle wrapper
         run: gradle wrapper --gradle-version 8.2
 
-      - name: Build AAR
-        run: ./gradlew :tun2socks-android:assembleRelease
+      - name: Preflight: inspect core symbols across ABIs
+        run: |
+          set -euxo pipefail
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            echo "=== nm for ${abi} ==="
+            nm -D tun2socks-android/src/main/jniLibs/${abi}/libtun2socks.so | grep -E 'tun2socks_|start|stop|run|info' || true
+            echo "=== readelf for ${abi} ==="
+            readelf -sW tun2socks-android/src/main/jniLibs/${abi}/libtun2socks.so | grep -E 'tun2socks_|start|stop|run|info' || true
+          done
 
-      - name: Upload AAR
+      - name: Build AAR (release)
+        run: ./gradlew :tun2socks-android:assembleRelease --stacktrace
+
+      - name: Print AAR contents
+        run: |
+          set -euxo pipefail
+          AAR="tun2socks-android/build/outputs/aar/tun2socks-android-release.aar"
+          test -f "$AAR"
+          mkdir -p aar_inspect && cp "$AAR" aar_inspect/
+          cd aar_inspect
+          unzip -l *.aar
+          unzip *.aar -d extracted
+          echo "=== Extracted lib contents ==="
+          find extracted/jni -type f -maxdepth 3 -print
+          echo "=== classes.jar contents ==="
+          jar tf extracted/classes.jar | head -n 200
+
+      - name: Upload artifacts (AAR + logs)
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-aar
-          path: tun2socks-android/build/outputs/aar/*.aar
+          name: tun2socks-aar-exhaustive
+          path: |
+            tun2socks-android/build/outputs/aar/*.aar
+            aar_inspect/extracted/**
+          if-no-files-found: error
+
+      - name: Fail if essential symbols missing (hard stop)
+        run: |
+          set -euxo pipefail
+          # Verify at least one start/stop symbol exists in arm64 to hard-gate correctness
+          readelf -sW tun2socks-android/src/main/jniLibs/arm64-v8a/libtun2socks.so | grep -E 'tun2socks_start|start_tun2socks|tun2socks_run' >/dev/null || { echo "ERROR: No start symbol in arm64 lib"; exit 1; }
+          readelf -sW tun2socks-android/src/main/jniLibs/arm64-v8a/libtun2socks.so | grep -E 'tun2socks_stop|stop_tun2socks' >/dev/null || { echo "ERROR: No stop symbol in arm64 lib"; exit 1; }
