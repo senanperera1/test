@@ -35,10 +35,12 @@ jobs:
         go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
     
-    - name: Initialize gomobile with NDK
+    - name: Initialize gomobile
       run: |
         export PATH=$PATH:$(go env GOPATH)/bin
-        gomobile init -ndk $ANDROID_NDK_HOME
+        export ANDROID_HOME=$ANDROID_HOME
+        export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
+        gomobile init
     
     - name: Create wrapper project structure
       run: |
