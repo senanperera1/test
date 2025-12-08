@@ -1,6 +1,4 @@
-name: Build SagerNet Tun2Socks AAR (Final)
-
-on:
+name: Build All-In-One Xray+Tun2Socks Libraryon:
   workflow_dispatch:
 
 jobs:
@@ -32,61 +30,110 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Create Tun2Socks Wrapper
+      - name: Create All-In-One Wrapper
         run: |
-          mkdir tun2socks
-          cd tun2socks
-          go mod init github.com/myuser/tun2socks
+          mkdir allinone
+          cd allinone
+          go mod init github.com/myuser/allinone
           
-          # This 'replace' directive correctly points to the SagerNet repository.
+          # Use 'replace' for SagerNet's go-tun2socks
           go mod edit -replace=github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
           
-          # Get the necessary dependencies.
+          # Get all dependencies
           go get github.com/eycorsican/go-tun2socks
+          go get github.com/xtls/xray-core@v1.8.4
           go get golang.org/x/mobile/bind
-          
-          # Create the Go wrapper file with the CORRECT function name.
-          cat <<'EOF' > tun2socks.go
-          package tun2socks
+
+          # Create the Go source file
+          cat <<'EOF' > library.go
+          package allinone
 
           import (
+              "fmt"
+              "io"
               "os"
+              "strings"
+              "time"
+
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
-              _ "golang.org/x/mobile/bind" // This blank import is critical.
+              _ "golang.org/x/mobile/bind"
+              
+              _ "github.com/xtls/xray-core/main/distro/all"
+              _ "github.com/xtls/xray-core/main/json"
+              xcore "github.com/xtls/xray-core/core"
+              "github.comcom/xtls/xray-core/infra/conf/serial"
           )
 
-          // This is a blocking call that runs the tun2socks loop.
-          func Start(fd int, proxyAddr string, proxyPort int) {
+          var xrayInstance *xcore.Instance
+          var tun2socksRunning = false
+
+          type Controller struct{}
+
+          func NewController() *Controller {
+              return &Controller{}
+          }
+
+          func (c *Controller) Start(fd int, configContent string) {
+              if tun2socksRunning {
+                  return
+              }
+
+              // 1. Start Xray-core in a goroutine
+              go func() {
+                  config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
+                  if err != nil {
+                      fmt.Printf("failed to load xray config: %v\n", err)
+                      return
+                  }
+                  instance, err := xcore.New(config)
+                  if err != nil {
+                      fmt.Printf("failed to create xray instance: %v\n", err)
+                      return
+                  }
+                  xrayInstance = instance
+                  if err := instance.Start(); err != nil {
+                      fmt.Printf("failed to start xray instance: %v\n", err)
+                  }
+              }()
+
+              // Give Xray a moment to start up the SOCKS server
+              time.Sleep(1 * time.Second)
+
+              // 2. Configure and start go-tun2socks
               f := os.NewFile(uintptr(fd), "tun")
-              
-              // THE FIX: The correct function name is NewSocks5Handler. I was wrong before.
-              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
+              proxy := socks.NewSocks5Handler("127.0.0.1", 10808)
 
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
               core.RegisterOutputFn(func(data []byte) (int, error) {
                   return f.Write(data)
               })
+
+              tun2socksRunning = true
+              // This is a blocking call that runs the tun2socks event loop
               core.Start()
           }
 
-          // Stop the tun2socks core loop
-          func Stop() {
+          func (c *Controller) Stop() {
+              if xrayInstance != nil {
+                  xrayInstance.Close()
+              }
               core.Stop()
+              tun2socksRunning = false
           }
           EOF
           
           go mod tidy
 
-      - name: Build Tun2Socks AAR
-        working-directory: tun2socks
+      - name: Build All-In-One AAR
+        working-directory: allinone
         run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
-          ls -lh ../libtun2socks.aar
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
+          ls -lh ../libv2ray.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: libtun2socks-aar
-          path: "libtun2socks.aar"
+          name: libv2ray-all-in-one-aar
+          path: "libv2ray.aar"
