@@ -32,13 +32,15 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Clone and Build Tun2Socks Mobile Library
+      - name: Checkout and Build Tun2Socks Mobile Library
+        uses: actions/checkout@v4
+        with:
+          repository: xiangfeidexiaohuo/go-tun2socks-mobile
+          path: go-tun2socks-mobile
+
+      - name: Build the AAR
+        working-directory: go-tun2socks-mobile
         run: |
-          # This repository is specifically designed to be built for mobile
-          git clone https://github.com/xiangfeidexiaohuo/go-tun2socks-mobile.git
-          cd go-tun2socks-mobile
-          
-          # The project is already configured, we just need to build it
           go mod tidy
           gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
           ls -lh ../libtun2socks.aar
