@@ -49,9 +49,9 @@ jobs:
           # Create wrapper module
           cd wrapper
           go mod init github.com/myuser/tun2socks
-          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../library_src
+          go mod edit -replace=github.com/xjasonlyu/tun2socks=../library_src
 
-          # Inline wrapper Go code
+          # Inline wrapper Go code (no /v2, correct imports)
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
@@ -60,9 +60,9 @@ jobs:
               "fmt"
               "log"
 
-              "github.com/xjasonlyu/tun2socks/v2/core"
-              "github.com/xjasonlyu/tun2socks/v2/proxy"
-              "github.com/xjasonlyu/tun2socks/v2/device/tun"
+              "github.com/xjasonlyu/tun2socks/core"
+              "github.com/xjasonlyu/tun2socks/proxy"
+              "github.com/xjasonlyu/tun2socks/tun"
               _ "golang.org/x/mobile/bind"
           )
 
@@ -119,7 +119,7 @@ jobs:
           EOF
 
           go get golang.org/x/mobile/bind
-          go get github.com/xjasonlyu/tun2socks/v2
+          go get github.com/xjasonlyu/tun2socks
           go mod tidy
 
           # Build AAR in workspace root
