@@ -10,9 +10,7 @@ jobs:
       JAVA_VERSION: '17'
       ANDROID_COMPILE_SDK: 34
       ANDROID_BUILD_TOOLS: 34.0.0
-      # Use the NDK version available on GitHub-hosted runners
       ANDROID_NDK_PACKAGE: ndk;26.3.11579264
-      # Use Go version compatible with tun2socks v2.6.0 requirements
       GO_VERSION: '1.24.11'
 
     steps:
@@ -44,17 +42,14 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build libtun2socks.so (arm64) with exported C symbols (latest v2 API)
+      - name: Build libtun2socks.so (arm64) with exported C symbols, using engine.Insert(Key)
         run: |
           set -euxo pipefail
 
-          # Create Go module
           mkdir -p core && cd core
           go mod init example.com/tun2socks-wrapper
-          # Pull latest v2
           go get github.com/xjasonlyu/tun2socks/v2@latest
 
-          # Wrapper using engine.Insert(cfg) + engine.Start() + engine.Stop()
           cat > main.go <<'EOF'
           package main
 
@@ -64,7 +59,6 @@ jobs:
           import "C"
 
           import (
-            "encoding/json"
             "fmt"
             "strings"
 
@@ -73,39 +67,25 @@ jobs:
 
           var started bool
 
-          // Build engine configuration JSON for v2 core.
-          func buildConfig(fd int, proxy string) string {
-            p := proxy
-            if !strings.Contains(p, "://") {
-              p = "socks5://" + p
-            }
-            cfg := map[string]any{
-              "device": map[string]any{
-                "fdbased": map[string]any{
-                  "fd": fd,
-                },
-              },
-              "proxy": map[string]any{
-                "socks5": map[string]any{
-                  "addr": p,
-                },
-              },
-              "netstack": map[string]any{
-                "enable": true,
-              },
-            }
-            b, _ := json.Marshal(cfg)
-            return string(b)
-          }
-
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
             if started {
               return 0
             }
-            cfg := buildConfig(int(fd), C.GoString(proxy))
-            // Latest v2 requires Insert(config) then Start() with no args
-            ts.Insert(cfg)
+            p := C.GoString(proxy)
+            if !strings.Contains(p, "://") {
+              p = "socks5://" + p
+            }
+
+            // Insert discrete configuration keys expected by latest v2 core
+            // device config: pass TUN FD via fdbased
+            ts.Insert(ts.Key{Name: "device", Value: fmt.Sprintf(`{"fdbased":{"fd":%d}}`, int(fd))})
+            // proxy config: socks5 addr
+            ts.Insert(ts.Key{Name: "proxy",  Value: fmt.Sprintf(`{"socks5":{"addr":"%s"}}`, p)})
+            // netstack config: enable=true
+            ts.Insert(ts.Key{Name: "netstack", Value: `{"enable":true}`})
+
+            // Start engine (no arguments in v2)
             ts.Start()
             started = true
             return 0
@@ -116,7 +96,6 @@ jobs:
             if !started {
               return 0
             }
-            // Stop() returns no value in v2
             ts.Stop()
             started = false
             return 0
@@ -131,7 +110,6 @@ jobs:
           func main() {}
           EOF
 
-          # Cross-compile for Android arm64 using NDK clang (API level 34 toolchain)
           CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
           export CC
           export CGO_ENABLED=1
@@ -150,7 +128,6 @@ jobs:
 
           mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
 
-          # Java API
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
           package com.example.tun2socks;
 
@@ -166,7 +143,6 @@ jobs:
           }
           EOF
 
-          # JNI bridge that calls exported C symbols
           cat > tun2socks-android/src/main/cpp/tun2socks_jni.c <<'EOF'
           #include <jni.h>
           #include <android/log.h>
@@ -203,10 +179,7 @@ jobs:
           JNIEXPORT jint JNICALL
           Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env, jclass, jint fd, jstring proxyUrl) {
               ensure_loaded();
-              if (!core_start) {
-                  LOGE("No tun2socks_start symbol");
-                  return -2;
-              }
+              if (!core_start) { LOGE("No tun2socks_start symbol"); return -2; }
               const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
               errno = 0;
               int rc = core_start(fd, url);
@@ -218,10 +191,7 @@ jobs:
           JNIEXPORT jint JNICALL
           Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass) {
               ensure_loaded();
-              if (!core_stop) {
-                  LOGE("No tun2socks_stop symbol");
-                  return -2;
-              }
+              if (!core_stop) { LOGE("No tun2socks_stop symbol"); return -2; }
               errno = 0;
               int rc = core_stop();
               LOGI("tun2socks_stop rc=%d errno=%d (%s)", rc, errno, strerror(errno));
@@ -231,15 +201,12 @@ jobs:
           JNIEXPORT jstring JNICALL
           Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env, jclass) {
               ensure_loaded();
-              if (!core_info) {
-                  return (*env)->NewStringUTF(env, "info not exported");
-              }
+              if (!core_info) { return (*env)->NewStringUTF(env, "info not exported"); }
               const char *s = core_info();
               return (*env)->NewStringUTF(env, s ? s : "null");
           }
           EOF
 
-          # ndk-build makefile
           cat > tun2socks-android/src/main/cpp/Android.mk <<'EOF'
           LOCAL_PATH := $(call my-dir)
           include $(CLEAR_VARS)
@@ -249,20 +216,15 @@ jobs:
           include $(BUILD_SHARED_LIBRARY)
           EOF
 
-          # Android Library Gradle
           cat > tun2socks-android/build.gradle <<'EOF'
-          plugins {
-              id 'com.android.library'
-          }
+          plugins { id 'com.android.library' }
           android {
               namespace "com.example.tun2socks"
               compileSdk 34
               defaultConfig {
                   minSdk 21
                   targetSdk 34
-                  ndk {
-                      abiFilters 'arm64-v8a'
-                  }
+                  ndk { abiFilters 'arm64-v8a' }
               }
               sourceSets {
                   main {
@@ -270,15 +232,10 @@ jobs:
                       jniLibs.srcDirs = ['src/main/jniLibs']
                   }
               }
-              externalNativeBuild {
-                  ndkBuild {
-                      path "src/main/cpp/Android.mk"
-                  }
-              }
+              externalNativeBuild { ndkBuild { path "src/main/cpp/Android.mk" } }
           }
           EOF
 
-          # Settings and top-level Gradle
           echo "include ':tun2socks-android'" > settings.gradle
           cat > build.gradle <<'EOF'
           buildscript {
