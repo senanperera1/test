@@ -1,21 +1,22 @@
-name: Build Separate Tun2Socks AAR (Final)
+name: Build SagerNet Tun2Socks AAR
 
 on:
   workflow_dispatch:
 
 jobs:
   build-aar:
-    runs-on: ubuntu-latest    steps:
+    runs-on: ubuntu-latest
+
+    steps:
       - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
+        uses: actions/setup-java@v4        with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.22"
 
       - name: Install gomobile
         run: |
@@ -31,44 +32,30 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Build Tun2Socks
+      - name: Create Tun2Socks Wrapper
         run: |
-          mkdir workspace
-          cd workspace
-          
-          # 1. Clone the library manually
-          git clone https://github.com/eycorsican/go-tun2socks.git library_src
-          
-          # 2. Create our wrapper module
-          mkdir wrapper
-          cd wrapper
+          mkdir tun2socks
+          cd tun2socks
           go mod init github.com/myuser/tun2socks
           
-          # 3. Point to the local source code
-          go mod edit -replace github.com/eycorsican/go-tun2socks=../library_src
+          # Use the active and maintained SagerNet fork
+          go get github.com/SagerNet/go-tun2socks@latest
           
-          # 4. Create the Go wrapper file
+          # Create the Go wrapper file
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
           import (
               "os"
-              "github.com/eycorsican/go-tun2socks/core"
-              "github.com/eycorsican/go-tun2socks/proxy/socks"
-              _ "golang.org/x/mobile/bind" // Keep this import for gomobile
+              "github.com/SagerNet/go-tun2socks/core"
+              "github.com/SagerNet/go-tun2socks/proxy/socks"
           )
 
           // Start the tun2socks core loop. This is a blocking call.
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
 
-              // Use 127.0.0.1 if address is empty
-              host := proxyAddr
-              if host == "" {
-                  host = "127.0.0.1"
-              }
-
-              proxy := socks.NewSocks5Handler(host, uint16(proxyPort))
+              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
 
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
@@ -79,19 +66,19 @@ jobs:
               core.Start()
           }
 
+          // Stop the tun2socks core loop
           func Stop() {
               core.Stop()
           }
           EOF
           
-          # 5. Resolve dependencies
-          go get golang.org/x/mobile/bind
-          go get github.com/eycorsican/go-tun2socks
           go mod tidy
 
-          # 6. Build the AAR
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../../libtun2socks.aar .
-          ls -lh ../../libtun2socks.aar
+      - name: Build Tun2Socks AAR
+        working-directory: tun2socks
+        run: |
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
+          ls -lh ../libtun2socks.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
