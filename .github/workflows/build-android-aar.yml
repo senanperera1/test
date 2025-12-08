@@ -1,4 +1,4 @@
-name: Build Final Tun2Socks AAR
+name: Build Native Xray Wrapper (Final)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.21"
 
       - name: Install gomobile
         run: |
@@ -32,21 +32,92 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Checkout and Build Tun2Socks Mobile Library
-        uses: actions/checkout@v4
-        with:
-          repository: xiangfeidexiaohuo/go-tun2socks-mobile
-          path: go-tun2socks-mobile
-
-      - name: Build the AAR
-        working-directory: go-tun2socks-mobile
+      - name: Create Custom Native TUN Wrapper
         run: |
+          mkdir mywrapper
+          cd mywrapper
+          go mod init github.com/myuser/libv2ray
+          
+          # Pin the exact, stable versions we need
+          go get github.com/xtls/xray-core@v1.8.4
+          go get golang.org/x/mobile/bind@latest
+          
+          # Create the Go source file with all the correct imports for native TUN
+          cat <<EOF > libv2ray.go
+          package libv2ray
+
+          import (
+              "fmt"
+              "strings"
+              
+              // Standard modules
+              _ "github.com/xtls/xray-core/main/distro/all"
+              
+              // CRITICAL: This package registers the JSON config loaders
+              _ "github.com/xtls/xray-core/main/json"
+              
+              // CRITICAL: This package registers the native TUN inbound handler
+              _ "github.com/xtls/xray-core/proxy/tun"
+              
+              // Gomobile dependency
+              _ "golang.org/x/mobile/bind"
+
+              core "github.com/xtls/xray-core/core"
+              "github.com/xtls/xray-core/infra/conf/serial"
+          )
+
+          type V2RayPoint struct {
+              instance *core.Instance
+              running  bool
+          }
+
+          func NewV2RayPoint() *V2RayPoint {
+              return &V2RayPoint{}
+          }
+
+          func (v *V2RayPoint) RunLoop(configContent string) error {
+              config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
+              if err != nil {
+                  return fmt.Errorf("failed to load config: %v", err)
+              }
+              server, err := core.New(config)
+              if err != nil {
+                  return fmt.Errorf("failed to create instance: %v", err)
+              }
+              v.instance = server
+              if err := server.Start(); err != nil {
+                  return fmt.Errorf("failed to start server: %v", err)
+              }
+              v.running = true
+              // This is a blocking call, so we don't return until it's stopped.
+              // This keeps the goroutine alive.
+              <-v.instance.Done()
+              v.running = false
+              return nil
+          }
+
+          func (v *V2RayPoint) StopLoop() error {
+              if v.instance != nil {
+                  return v.instance.Close()
+              }
+              return nil
+          }
+          
+          func (v *V2RayPoint) IsRunning() bool {
+              return v.running
+          }
+EOF
+
           go mod tidy
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
-          ls -lh ../libtun2socks.aar
+
+      - name: Build Custom AAR
+        working-directory: mywrapper
+        run: |
+          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
+          ls -lh ../libv2ray.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: libtun2socks-aar
-          path: "libtun2socks.aar"
+          name: libv2ray-native-tun-aar
+          path: "libv2ray.aar"
