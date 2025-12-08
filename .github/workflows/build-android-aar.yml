@@ -35,17 +35,15 @@ jobs:
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "${ANDROID_NDK_PACKAGE}"
           NDK_DIR="$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | head -n1)"
           echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
-          echo "Using NDK at ${NDK_DIR}"
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build libtun2socks.so (arm64) with exported C symbols, using engine.Insert(Key)
+      - name: Build libtun2socks.so (arm64) with exported C symbols
         run: |
           set -euxo pipefail
-
           mkdir -p core && cd core
           go mod init example.com/tun2socks-wrapper
           go get github.com/xjasonlyu/tun2socks/v2@latest
@@ -59,6 +57,7 @@ jobs:
           import "C"
 
           import (
+            "encoding/json"
             "fmt"
             "strings"
 
@@ -67,25 +66,38 @@ jobs:
 
           var started bool
 
+          func buildConfig(fd int, proxy string) string {
+            p := proxy
+            if !strings.Contains(p, "://") {
+              p = "socks5://" + p
+            }
+            cfg := map[string]any{
+              "device": map[string]any{
+                "fdbased": map[string]any{
+                  "fd": fd,
+                },
+              },
+              "proxy": map[string]any{
+                "socks5": map[string]any{
+                  "addr": p,
+                },
+              },
+              "netstack": map[string]any{
+                "enable": true,
+              },
+            }
+            b, _ := json.Marshal(cfg)
+            return string(b)
+          }
+
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
             if started {
               return 0
             }
-            p := C.GoString(proxy)
-            if !strings.Contains(p, "://") {
-              p = "socks5://" + p
-            }
-
-            // Insert discrete configuration keys expected by latest v2 core
-            // device config: pass TUN FD via fdbased
-            ts.Insert(ts.Key{Name: "device", Value: fmt.Sprintf(`{"fdbased":{"fd":%d}}`, int(fd))})
-            // proxy config: socks5 addr
-            ts.Insert(ts.Key{Name: "proxy",  Value: fmt.Sprintf(`{"socks5":{"addr":"%s"}}`, p)})
-            // netstack config: enable=true
-            ts.Insert(ts.Key{Name: "netstack", Value: `{"enable":true}`})
-
-            // Start engine (no arguments in v2)
+            cfg := buildConfig(int(fd), C.GoString(proxy))
+            // Latest v2 provides InsertConfig for JSON strings
+            ts.InsertConfig(cfg)
             ts.Start()
             started = true
             return 0
@@ -111,32 +123,24 @@ jobs:
           EOF
 
           CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
-          export CC
-          export CGO_ENABLED=1
-          export GOOS=android
-          export GOARCH=arm64
-
+          export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
           go build -buildmode=c-shared -o libtun2socks.so
 
           cd ..
           mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
           cp core/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
-      - name: Create Android library with JNI bridge and Gradle project
+      - name: Create Android library with JNI bridge
         run: |
-          set -euxo pipefail
-
           mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
 
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
           package com.example.tun2socks;
-
           public class Tun2Socks {
               static {
                   System.loadLibrary("tun2socks_jni");
                   System.loadLibrary("tun2socks");
               }
-
               public static native int start(int tunFd, String proxyUrl);
               public static native int stop();
               public static native String coreInfo();
@@ -149,61 +153,36 @@ jobs:
           #include <dlfcn.h>
           #include <string.h>
           #include <errno.h>
-
           #define LOG_TAG "Tun2SocksJNI"
           #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
           #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
           typedef int (*start_fn)(int fd, const char *url);
           typedef int (*stop_fn)();
           typedef const char* (*info_fn)();
-
-          static void *handle = NULL;
-          static start_fn core_start = NULL;
-          static stop_fn  core_stop  = NULL;
-          static info_fn  core_info  = NULL;
-
+          static void *handle; static start_fn core_start; static stop_fn core_stop; static info_fn core_info;
           static void ensure_loaded() {
               if (handle) return;
               handle = dlopen("libtun2socks.so", RTLD_NOW);
-              if (!handle) {
-                  LOGE("dlopen failed: %s", dlerror());
-                  return;
-              }
               core_start = (start_fn)dlsym(handle, "tun2socks_start");
               core_stop  = (stop_fn)dlsym(handle, "tun2socks_stop");
               core_info  = (info_fn)dlsym(handle, "tun2socks_info");
               LOGI("Symbols: start=%p stop=%p info=%p", core_start, core_stop, core_info);
           }
-
-          JNIEXPORT jint JNICALL
-          Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env, jclass, jint fd, jstring proxyUrl) {
-              ensure_loaded();
-              if (!core_start) { LOGE("No tun2socks_start symbol"); return -2; }
-              const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
-              errno = 0;
-              int rc = core_start(fd, url);
-              LOGI("tun2socks_start rc=%d errno=%d (%s)", rc, errno, strerror(errno));
-              (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
+          JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env,jclass,jint fd,jstring proxyUrl){
+              ensure_loaded(); if(!core_start){LOGE("No tun2socks_start"); return -2;}
+              const char *url=(*env)->GetStringUTFChars(env,proxyUrl,0);
+              int rc=core_start(fd,url);
+              (*env)->ReleaseStringUTFChars(env,proxyUrl,url);
               return rc;
           }
-
-          JNIEXPORT jint JNICALL
-          Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass) {
-              ensure_loaded();
-              if (!core_stop) { LOGE("No tun2socks_stop symbol"); return -2; }
-              errno = 0;
-              int rc = core_stop();
-              LOGI("tun2socks_stop rc=%d errno=%d (%s)", rc, errno, strerror(errno));
-              return rc;
+          JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env,jclass){
+              ensure_loaded(); if(!core_stop){LOGE("No tun2socks_stop"); return -2;}
+              return core_stop();
           }
-
-          JNIEXPORT jstring JNICALL
-          Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env, jclass) {
-              ensure_loaded();
-              if (!core_info) { return (*env)->NewStringUTF(env, "info not exported"); }
-              const char *s = core_info();
-              return (*env)->NewStringUTF(env, s ? s : "null");
+          JNIEXPORT jstring JNICALL Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env,jclass){
+              ensure_loaded(); if(!core_info) return (*env)->NewStringUTF(env,"info not exported");
+              const char *s=core_info();
+              return (*env)->NewStringUTF(env,s?s:"null");
           }
           EOF
 
@@ -242,17 +221,4 @@ jobs:
               repositories { google(); mavenCentral() }
               dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
           }
-          allprojects { repositories { google(); mavenCentral() } }
-          EOF
-
-      - name: Initialize Gradle wrapper
-        run: gradle wrapper --gradle-version 8.2
-
-      - name: Build AAR (release)
-        run: ./gradlew :tun2socks-android:assembleRelease --stacktrace
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tun2socks-aar-arm64
-          path: tun2socks-android/build/outputs/aar/*.aar
+          allprojects { repositories { google
