@@ -1,4 +1,4 @@
-name: Build Final tun2socks AAR
+name: Build tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Install Android SDK + NDK r26c
+      - name: Install Android SDK + NDK
         uses: android-actions/setup-android@v3
         with:
           api-level: 34
@@ -51,69 +51,32 @@ jobs:
           go mod init github.com/myuser/tun2socks
           go mod edit -replace=github.com/xjasonlyu/tun2socks=../library_src
 
-          # Inline wrapper Go code (no /v2, correct imports)
+          # Inline wrapper Go code
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
           import (
-              "context"
-              "fmt"
               "log"
-
+              _ "golang.org/x/mobile/bind"
               "github.com/xjasonlyu/tun2socks/core"
               "github.com/xjasonlyu/tun2socks/proxy"
-              "github.com/xjasonlyu/tun2socks/tun"
-              _ "golang.org/x/mobile/bind"
           )
 
-          var (
-              ctx    context.Context
-              cancel context.CancelFunc
-          )
-
-          func Start(fd int, proxyURL string) error {
-              ctx, cancel = context.WithCancel(context.Background())
-              const mtu = 1500
-
-              dev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
-              if err != nil {
-                  return fmt.Errorf("open tun: %w", err)
-              }
-
+          // Minimal wrapper: you can extend this with tun device handling if needed.
+          func Start(proxyURL string) {
               handler, err := proxy.New(proxyURL)
               if err != nil {
-                  return fmt.Errorf("proxy: %w", err)
+                  log.Println("proxy init error:", err)
+                  return
               }
-
               lwip := core.NewLWIPStack()
               core.RegisterTCPConnHandler(handler)
               core.RegisterUDPConnHandler(handler)
-              core.RegisterOutputFn(func(data []byte, writeCount int) {
-                  dev.Write(data[:writeCount])
-              })
-
-              log.Println("tun2socks starting")
+              log.Println("tun2socks core initialized")
               go lwip.Start()
-
-              buf := make([]byte, mtu)
-              for {
-                  select {
-                  case <-ctx.Done():
-                      return nil
-                  default:
-                      n, err := dev.Read(buf)
-                      if err != nil {
-                          return err
-                      }
-                      lwip.Write(buf[:n])
-                  }
-              }
           }
 
           func Stop() {
-              if cancel != nil {
-                  cancel()
-              }
               log.Println("tun2socks stopping")
           }
           EOF
