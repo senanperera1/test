@@ -1,13 +1,11 @@
-name: Build Tun2Socks AAR (Local Clone Fixed)
+name: Build Separate Tun2Socks AAR (Final)
 
 on:
   workflow_dispatch:
 
 jobs:
   build-aar:
-    runs-on: ubuntu-latest
-
-    steps:
+    runs-on: ubuntu-latest    steps:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -38,10 +36,10 @@ jobs:
           mkdir workspace
           cd workspace
           
-          # 1. Clone the library manually to avoid "unknown revision" errors
+          # 1. Clone the library manually
           git clone https://github.com/eycorsican/go-tun2socks.git library_src
           
-          # 2. Create our wrapper folder
+          # 2. Create our wrapper module
           mkdir wrapper
           cd wrapper
           go mod init github.com/myuser/tun2socks
@@ -50,7 +48,6 @@ jobs:
           go mod edit -replace github.com/eycorsican/go-tun2socks=../library_src
           
           # 4. Create the Go wrapper file
-          # Note: Added _ "golang.org/x/mobile/bind" to force inclusion
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
@@ -58,16 +55,14 @@ jobs:
               "os"
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
-              
-              // CRITICAL: Import bind to prevent go mod tidy from removing it
-              _ "golang.org/x/mobile/bind"
+              _ "golang.org/x/mobile/bind" // Keep this import for gomobile
           )
 
-          // Start the tun2socks core loop. 
+          // Start the tun2socks core loop. This is a blocking call.
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
 
-              // Use 127.0.0.1 if empty
+              // Use 127.0.0.1 if address is empty
               host := proxyAddr
               if host == "" {
                   host = "127.0.0.1"
