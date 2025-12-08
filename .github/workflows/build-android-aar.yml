@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (single .so from native/)
+name: Build tun2socks AAR (arm64 only, keep .so in native/)
 
 on:
   workflow_dispatch:
@@ -35,8 +35,9 @@ jobs:
       - name: Prepare Android library module
         run: |
           set -euxo pipefail
-          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs}
-          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/
+          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs/arm64-v8a}
+          # Copy your .so into the ABI folder so Gradle accepts it
+          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
           # Java wrapper
           cat <<'EOF' > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java
@@ -175,6 +176,9 @@ jobs:
               defaultConfig {
                   minSdk 21
                   targetSdk 34
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
               }
 
               sourceSets {
