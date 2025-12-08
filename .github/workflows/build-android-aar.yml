@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (arm64)
+name: Build tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -32,46 +32,46 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install Android SDK, build-tools, and NDK
+      - name: Install Android cmdline-tools, SDK, build-tools, and NDK
         shell: bash
         run: |
           set -euxo pipefail
 
-          mkdir -p "${ANDROID_SDK_ROOT}"
-          yes | sudo ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+          # Ensure base directories
+          sudo mkdir -p "${ANDROID_SDK_ROOT}"
+          sudo chown -R "$USER":"$USER" "${ANDROID_SDK_ROOT}"
 
-          # Install cmdline-tools if missing
+          # Install commandline-tools if missing
           if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
-            mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
             wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
+            mkdir -p /tmp/cmdtools
             unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
-            sudo mv /tmp/cmdtools/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
-            sudo chown -R $USER:$USER "${ANDROID_SDK_ROOT}"
+            mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+            mv /tmp/cmdtools/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
           fi
 
           export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
 
-          yes | sdkmanager --licenses
+          yes | sdkmanager --licenses || true
 
           sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;${ANDROID_BUILD_TOOLS}" "ndk;${ANDROID_NDK_VERSION}"
 
           # Expose NDK path
-          NDK_DIR="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
-          echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
-          echo "Using NDK at ${NDK_DIR}"
+          echo "NDK_DIR=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Build libtun2socks.so (arm64) with v2→v1 fallback
         shell: bash
         run: |
           set -euxo pipefail
 
+          # Workspace
           rm -rf core tun2socks-android || true
           mkdir -p core
           cd core
 
           go mod init example.com/tun2socks-wrapper
 
-          # Write v2 wrapper (attempt modern API)
+          # Write v2 wrapper
           cat > main_v2.go <<'EOF'
 package main
 /*
@@ -94,9 +94,9 @@ func buildConfig(fd int, proxy string) string {
     p = "socks5://" + p
   }
   cfg := map[string]any{
-    "device": map[string]any{"fdbased": map[string]any{"fd": fd}},
-    "proxy":  map[string]any{"socks5": map[string]any{"addr": p}},
-    "netstack": map[string]any{"enable": true},
+    "device":   map[string]any{"fdbased": map[string]any{"fd": fd}},
+    "proxy":    map[string]any{"socks5":  map[string]any{"addr": p}},
+    "netstack": map[string]any{"enable":  true},
   }
   b, _ := json.Marshal(cfg)
   return string(b)
@@ -128,7 +128,7 @@ func tun2socks_info() *C.char {
 func main() {}
 EOF
 
-          # Write v1 wrapper (stable API)
+          # Write v1 wrapper
           cat > main_v1.go <<'EOF'
 package main
 /*
@@ -151,9 +151,9 @@ func buildConfig(fd int, proxy string) string {
     p = "socks5://" + p
   }
   cfg := map[string]any{
-    "device": map[string]any{"fdbased": map[string]any{"fd": fd}},
-    "proxy":  map[string]any{"socks5": map[string]any{"addr": p}},
-    "netstack": map[string]any{"enable": true},
+    "device":   map[string]any{"fdbased": map[string]any{"fd": fd}},
+    "proxy":    map[string]any{"socks5":  map[string]any{"addr": p}},
+    "netstack": map[string]any{"enable":  true},
   }
   b, _ := json.Marshal(cfg)
   return string(b)
@@ -193,6 +193,7 @@ EOF
 
           mv main_v2.go main.go
 
+          # NDK env
           if [ -z "${NDK_DIR:-}" ]; then
             echo "NDK_DIR not set" >&2
             exit 1
@@ -242,6 +243,7 @@ EOF
 
           mkdir -p tun2socks-android/src/main/java/com/example/tun2socks
           mkdir -p tun2socks-android/src/main/cpp
+          mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
 
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
 package com.example.tun2socks;
