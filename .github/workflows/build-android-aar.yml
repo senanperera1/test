@@ -1,4 +1,4 @@
-name: Build SagerNet Tun2Socks AAR (Fixed)
+name: Build SagerNet Tun2Socks AAR (Final)
 
 on:
   workflow_dispatch:
@@ -8,8 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Javauses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -39,14 +38,14 @@ jobs:
           cd tun2socks
           go mod init github.com/myuser/tun2socks
           
-          # FIX: Point the 'eycorsican' module to the 'SagerNet' repository
+          # Point the 'eycorsican' module to the 'SagerNet' repository
           go mod edit -replace github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
           
-          # Now get the module using its ORIGINAL name
+          # Get the module using its original name
           go get github.com/eycorsican/go-tun2socks
           go get golang.org/x/mobile/bind
           
-          # Create the Go wrapper file imports the original name
+          # Create the Go wrapper file
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
@@ -54,23 +53,20 @@ jobs:
               "os"
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
+              
+              // CRITICAL: This blank import forces Go to keep the 'bind' package.
+              _ "golang.org/x/mobile/bind"
           )
 
-          // Start the tun2socks core loop. 
-          // fd: File descriptor
-          // proxyAddr: "127.0.0.1"
-          // proxyPort: 10808
+          // Start the tun2socks core loop. This is a blocking call.
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
-
               proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
-
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
               core.RegisterOutputFn(func(data []byte) (int, error) {
                   return f.Write(data)
               })
-
               core.Start()
           }
 
@@ -85,3 +81,10 @@ jobs:
         working-directory: tun2socks
         run: |
           gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
+          ls -lh ../libtun2socks.aar
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtun2socks-aar
+          path: "libtun2socks.aar"
