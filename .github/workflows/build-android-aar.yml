@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (arm64 only)
+name: Build tun2socks AAR (single .so from native/)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,6 @@ jobs:
   build-aar:
     runs-on: ubuntu-latest
     env:
-      ANDROID_NDK_VERSION: 25.1.8937393
       ANDROID_BUILD_TOOLS: 34.0.0
       ANDROID_COMPILE_SDK: 34
       JAVA_VERSION: '17'
@@ -28,16 +27,16 @@ jobs:
           api-level: ${{ env.ANDROID_COMPILE_SDK }}
           components: build-tools;${{ env.ANDROID_BUILD_TOOLS }}
 
-      - name: Verify arm64 core lib exists
+      - name: Verify core lib exists
         run: |
           set -euxo pipefail
-          test -f native/arm64-v8a/libtun2socks.so || { echo "Missing native/arm64-v8a/libtun2socks.so"; exit 1; }
+          test -f native/libtun2socks.so || { echo "Missing native/libtun2socks.so"; exit 1; }
 
       - name: Prepare Android library module
         run: |
           set -euxo pipefail
-          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs/arm64-v8a}
-          cp native/arm64-v8a/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
+          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs}
+          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/
 
           # Java wrapper
           cat <<'EOF' > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java
@@ -51,7 +50,6 @@ jobs:
 
               public static native int start(int tunFd, String proxyUrl);
               public static native int stop();
-
               public static native int startWithParams(
                   int tunFd,
                   String proxyUrl,
@@ -63,7 +61,6 @@ jobs:
                   String dns1,
                   String dns2
               );
-
               public static native String coreInfo();
           }
           EOF
@@ -178,10 +175,6 @@ jobs:
               defaultConfig {
                   minSdk 21
                   targetSdk 34
-
-                  ndk {
-                      abiFilters 'arm64-v8a'
-                  }
               }
 
               sourceSets {
@@ -199,10 +192,8 @@ jobs:
           }
           EOF
 
-          # settings.gradle
           echo "include ':tun2socks-android'" > settings.gradle
 
-          # Top-level build.gradle
           cat <<'EOF' > build.gradle
           buildscript {
               repositories {
@@ -227,8 +218,8 @@ jobs:
       - name: Build AAR (release)
         run: ./gradlew :tun2socks-android:assembleRelease --stacktrace
 
-      - name: Upload artifacts
+      - name: Upload AAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-aar-arm64
+          name: tun2socks-aar
           path: tun2socks-android/build/outputs/aar/*.aar
