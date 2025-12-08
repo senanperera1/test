@@ -1,4 +1,4 @@
-name: Build tun2socks AAR from uploaded .so
+name: Build tun2socks AAR with JNI bridge
 
 on:
   workflow_dispatch:
@@ -27,14 +27,15 @@ jobs:
         run: |
           # Create folder structure
           mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
-          mkdir -p tun2socks-android/src/main/java/com/example/tun2socks
+          mkdir -p tun2socks-android/src/main/java/tun2socks
+          mkdir -p tun2socks-android/src/main/cpp
 
           # Copy your uploaded .so file into jniLibs
           cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
           # Minimal Java wrapper class
-          cat <<'EOF' > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java
-          package com.example.tun2socks;
+          cat <<'EOF' > tun2socks-android/src/main/java/tun2socks/Tun2Socks.java
+          package tun2socks;
 
           public class Tun2Socks {
               static {
@@ -46,6 +47,25 @@ jobs:
           }
           EOF
 
+          # JNI bridge C file
+          cat <<'EOF' > tun2socks-android/src/main/cpp/tun2socks_jni.c
+          #include <jni.h>
+          #include "tun2socks.h"  // header from your C library
+
+          JNIEXPORT jint JNICALL
+          Java_tun2socks_Tun2Socks_start(JNIEnv *env, jclass clazz, jint fd, jstring proxyUrl) {
+              const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
+              int result = tun2socks_start(fd, url);
+              (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
+              return result;
+          }
+
+          JNIEXPORT jint JNICALL
+          Java_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass clazz) {
+              return tun2socks_stop();
+          }
+          EOF
+
           # Library build.gradle
           cat <<'EOF' > tun2socks-android/build.gradle
           plugins {
@@ -53,7 +73,7 @@ jobs:
           }
 
           android {
-              namespace "com.example.tun2socks"
+              namespace "tun2socks"
               compileSdk 34
 
               defaultConfig {
@@ -65,9 +85,27 @@ jobs:
                   main {
                       java.srcDirs = ['src/main/java']
                       jniLibs.srcDirs = ['src/main/jniLibs']
+                      cpp.srcDirs = ['src/main/cpp']
+                  }
+              }
+
+              externalNativeBuild {
+                  ndkBuild {
+                      path "src/main/cpp/Android.mk"
                   }
               }
           }
+          EOF
+
+          # Android.mk for JNI bridge
+          cat <<'EOF' > tun2socks-android/src/main/cpp/Android.mk
+          LOCAL_PATH := $(call my-dir)
+
+          include $(CLEAR_VARS)
+          LOCAL_MODULE    := tun2socks
+          LOCAL_SRC_FILES := tun2socks_jni.c
+          LOCAL_LDLIBS    := -llog
+          include $(BUILD_SHARED_LIBRARY)
           EOF
 
           # Settings.gradle
