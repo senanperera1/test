@@ -1,4 +1,4 @@
-name: Build Native Xray Wrapper (Final)
+name: Build xjasonlyu-tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -8,16 +8,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup Java
-        uses: actions/setup-java@v4with:
+        uses: actions/setup-java@v4
+        with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.22"
 
-      - name: Install gomobile
+      - name: Install gomobile and dependencies
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
@@ -31,91 +32,114 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Create Custom Native TUN Wrapper
+      - name: Create Tun2Socks Wrapper from xjasonlyu/tun2socks
         run: |
-          mkdir mywrapper
-          cd mywrapper
-          go mod init github.com/myuser/libv2ray
+          # 1. Create a workspace
+          mkdir -p workspace/wrapper
+          cd workspace
+
+          # 2. Clone the user's chosen repository
+          git clone https://github.com/xjasonlyu/tun2socks.git library_src
           
-          # Pin the exact, stable versions we need
-          go get github.com/xtls/xray-core@v1.8.4
-          go get golang.org/x/mobile/bind@latest
+          # 3. Navigate into our wrapper directory
+          cd wrapper
+          go mod init github.com/myuser/tun2socks
           
-          # Create the Go source file with all the correct imports
-          cat <<EOF > libv2ray.go
-          package libv2ray
+          # 4. Point to the local source code of the real library
+          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../library_src
+          
+          # 5. Create our Go wrapper file that calls the library's internal functions
+          cat <<'EOF' > tun2socks.go
+          package tun2socks
 
           import (
+              "context"
               "fmt"
-              "strings"
-              
-              // Standard modules
-              _ "github.com/xtls/xray-core/main/distro/all"
-              
-              // CRITICAL: This package registers the JSON config loaders
-              _ "github.com/xtls/xray-core/main/json"
-              
-              // CRITICAL: This package registers the native TUN inbound handler
-              _ "github.com/xtls/xray-core/proxy/tun"
-              
-              // Gomobile dependency
-              _ "golang.org/x/mobile/bind"
+              "io"
+              "os"
+              "time"
+              "log"
 
-              core "github.com/xtls/xray-core/core"
-              "github.com/xtls/xray-core/infra/conf/serial"
+              "github.com/xjasonlyu/tun2socks/v2/core"
+              "github.com/xjasonlyu/tun2socks/v2/proxy"
+              "github.com/xjasonlyu/tun2socks/v2/tun"
+              _ "golang.org/x/mobile/bind"
           )
 
-          type V2RayPoint struct {
-              instance *core.Instance
-              running  bool
-          }
+          var (
+              ctx    context.Context
+              cancel context.CancelFunc
+          )
 
-          func NewV2RayPoint() *V2RayPoint {
-              return &V2RayPoint{}
-          }
+          // This function replicates the core logic of xjasonlyu/tun2socks's main.go
+          func Start(fd int, proxyURL string) error {
+              ctx, cancel = context.WithCancel(context.Background())
 
-          func (v *V2RayPoint) RunLoop(configContent string) error {
-              config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
+              // Open TUN device from file descriptor
+              mtu := 1500 // A standard MTU, can be adjusted
+              tunDev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
               if err != nil {
-                  return fmt.Errorf("failed to load config: %v", err)
+                  return fmt.Errorf("failed to open tun device: %w", err)
               }
-              server, err := core.New(config)
+
+              // Create proxy handler
+              proxyHandler, err := proxy.New(proxyURL)
               if err != nil {
-                  return fmt.Errorf("failed to create instance: %v", err)
+                  return fmt.Errorf("failed to create proxy handler: %w", err)
               }
-              v.instance = server
-              if err := server.Start(); err != nil {
-                  return fmt.Errorf("failed to start server: %v", err)
+
+              // Create lwIP stack
+              lwipStack := core.NewLWIPStack()
+
+              // Register handlers
+              core.RegisterTCPConnHandler(proxyHandler)
+              core.RegisterUDPConnHandler(proxyHandler)
+              core.RegisterOutputFn(func(data []byte, writeCount int) {
+                  tunDev.Write(data[:writeCount])
+              })
+
+              log.Println("xjasonlyu/tun2socks is running")
+
+              // Start the event loop
+              go lwipStack.Start()
+              
+              // Read from TUN device
+              packet := make([]byte, mtu)
+              for {
+                  select {
+                  case <-ctx.Done():
+                      return nil
+                  default:
+                      n, err := tunDev.Read(packet)
+                      if err != nil {
+                          return err
+                      }
+                      lwipStack.Write(packet[:n])
+                  }
               }
-              v.running = true
-              // This is a blocking call that keeps the goroutine alive.
-              <-v.instance.Done()
-              v.running = false
-              return nil
           }
 
-          func (v *V2RayPoint) StopLoop() error {
-              if v.instance != nil {
-                  return v.instance.Close()
+          func Stop() {
+              if cancel != nil {
+                  cancel()
               }
-              return nil
+              log.Println("xjasonlyu/tun2socks is stopping")
           }
+          EOF
           
-          func (v *V2RayPoint) IsRunning() bool {
-              return v.running
-          }
-EOF
-          
+          # 6. Get dependencies
+          go get golang.org/x/mobile/bind
+          go get github.com/xjasonlyu/tun2socks/v2
           go mod tidy
 
-      - name: Build Custom AAR
-        working-directory: mywrapper
+      - name: Build Tun2Socks AAR
+        working-directory: workspace/wrapper
         run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -tags "json,tun" -o ../libv2ray.aar .
-          ls -lh ../libv2ray.aar
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../../libtun2socks.aar .
+          ls -lh ../../libtun2socks.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: libv2ray-native-tun-aar
-          path: "libv2ray.aar"
+          name: libtun2socks-aar-xjasonlyu
+          path: "libtun2socks.aar"
