@@ -1,4 +1,4 @@
-name: Build exhaustive tun2socks AAR (multi-ABI, diagnostics)
+name: Build tun2socks AAR (arm64 only)
 
 on:
   workflow_dispatch:
@@ -28,21 +28,16 @@ jobs:
           api-level: ${{ env.ANDROID_COMPILE_SDK }}
           components: build-tools;${{ env.ANDROID_BUILD_TOOLS }}
 
-      - name: Verify prebuilt core libs exist
+      - name: Verify arm64 core lib exists
         run: |
           set -euxo pipefail
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            test -f native/${abi}/libtun2socks.so || { echo "Missing native/${abi}/libtun2socks.so"; exit 1; }
-          done
+          test -f native/arm64-v8a/libtun2socks.so || { echo "Missing native/arm64-v8a/libtun2socks.so"; exit 1; }
 
       - name: Prepare Android library module
         run: |
           set -euxo pipefail
-          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}}
+          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks,jniLibs/arm64-v8a}
           cp native/arm64-v8a/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
-          cp native/armeabi-v7a/libtun2socks.so tun2socks-android/src/main/jniLibs/armeabi-v7a/
-          cp native/x86/libtun2socks.so tun2socks-android/src/main/jniLibs/x86/
-          cp native/x86_64/libtun2socks.so tun2socks-android/src/main/jniLibs/x86_64/
 
           # Java wrapper
           cat <<'EOF' > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java
@@ -135,35 +130,6 @@ jobs:
           }
 
           JNIEXPORT jint JNICALL
-          Java_com_example_tun2socks_Tun2Socks_startWithParams(
-              JNIEnv *env, jclass clazz, jint fd, jstring proxyUrl,
-              jstring ip4, jint prefix, jint mtu, jboolean enableUdp, jboolean enableIpv6,
-              jstring dns1, jstring dns2
-          ) {
-              ensure_loaded();
-              if (!core_start_full) {
-                  LOGE("No startWithParams symbol found");
-                  return -2;
-              }
-              const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
-              const char *ip4c = (*env)->GetStringUTFChars(env, ip4, 0);
-              const char *dns1c = (*env)->GetStringUTFChars(env, dns1, 0);
-              const char *dns2c = (*env)->GetStringUTFChars(env, dns2, 0);
-
-              LOGI("Calling core_start_full(fd=%d, url=%s, ip4=%s, prefix=%d, mtu=%d, udp=%d, ipv6=%d, dns1=%s, dns2=%s)",
-                   fd, url, ip4c, (int)prefix, (int)mtu, enableUdp?1:0, enableIpv6?1:0, dns1c, dns2c);
-              errno = 0;
-              int rc = core_start_full(fd, url, ip4c, (int)prefix, (int)mtu, enableUdp?1:0, enableIpv6?1:0, dns1c, dns2c);
-              LOGI("core_start_full rc=%d errno=%d (%s)", rc, errno, strerror(errno));
-
-              (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
-              (*env)->ReleaseStringUTFChars(env, ip4, ip4c);
-              (*env)->ReleaseStringUTFChars(env, dns1, dns1c);
-              (*env)->ReleaseStringUTFChars(env, dns2, dns2c);
-              return rc;
-          }
-
-          JNIEXPORT jint JNICALL
           Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass clazz) {
               ensure_loaded();
               if (!core_stop) {
@@ -181,4 +147,88 @@ jobs:
           Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env, jclass clazz) {
               ensure_loaded();
               if (!core_info_fn) {
-                  return (*env)->NewStringUTF(env, "coreInfo() not
+                  return (*env)->NewStringUTF(env, "coreInfo() not exported");
+              }
+              const char *info = core_info_fn();
+              return (*env)->NewStringUTF(env, info ? info : "null");
+          }
+          EOF
+
+          # Android.mk
+          cat <<'EOF' > tun2socks-android/src/main/cpp/Android.mk
+          LOCAL_PATH := $(call my-dir)
+
+          include $(CLEAR_VARS)
+          LOCAL_MODULE    := tun2socks_jni
+          LOCAL_SRC_FILES := tun2socks_jni.c
+          LOCAL_LDLIBS    := -llog -ldl
+          include $(BUILD_SHARED_LIBRARY)
+          EOF
+
+          # build.gradle
+          cat <<'EOF' > tun2socks-android/build.gradle
+          plugins {
+              id 'com.android.library'
+          }
+
+          android {
+              namespace "com.example.tun2socks"
+              compileSdk 34
+
+              defaultConfig {
+                  minSdk 21
+                  targetSdk 34
+
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
+              }
+
+              sourceSets {
+                  main {
+                      java.srcDirs = ['src/main/java']
+                      jniLibs.srcDirs = ['src/main/jniLibs']
+                  }
+              }
+
+              externalNativeBuild {
+                  ndkBuild {
+                      path "src/main/cpp/Android.mk"
+                  }
+              }
+          }
+          EOF
+
+          # settings.gradle
+          echo "include ':tun2socks-android'" > settings.gradle
+
+          # Top-level build.gradle
+          cat <<'EOF' > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
+          }
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+
+      - name: Initialize Gradle wrapper
+        run: gradle wrapper --gradle-version 8.2
+
+      - name: Build AAR (release)
+        run: ./gradlew :tun2socks-android:assembleRelease --stacktrace
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tun2socks-aar-arm64
+          path: tun2socks-android/build/outputs/aar/*.aar
