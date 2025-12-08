@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# -------- Env --------
+# -------- Config --------
 ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
 ANDROID_API=${ANDROID_API:-34}
 ANDROID_BUILD_TOOLS=${ANDROID_BUILD_TOOLS:-34.0.0}
-# Use an NDK version CI installs consistently. Logs showed 26.1 gets installed even when 26.3 was requested.
-ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-26.1.10909125}
+ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-26.1.10909125} # pin to a CI-reliable version
 
-# -------- Install Android cmdline-tools + accept licenses non-interactively --------
+# -------- Install cmdline-tools and SDK packages --------
 if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
   wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
   mkdir -p /tmp/cmdtools
@@ -19,35 +18,36 @@ fi
 
 export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
 
-# Accept ALL licenses without prompts (prevents CI hang)
+# Accept licenses non-interactively; "Broken pipe" here is benign
 yes | sdkmanager --licenses || true
 
-# Install required SDK components
+# Install required packages
 sdkmanager "platform-tools" \
            "platforms;android-${ANDROID_API}" \
            "build-tools;${ANDROID_BUILD_TOOLS}" \
            "ndk;${ANDROID_NDK_VERSION}"
 
-# Detect actual installed NDK (handles side-by-side installs)
-NDK_DIR=$(ls -d "${ANDROID_SDK_ROOT}/ndk/"*/ 2>/dev/null | sort -V | tail -n1 | sed 's:/*$::')
-if [ -z "${NDK_DIR}" ]; then
-  echo "NDK not found under ${ANDROID_SDK_ROOT}/ndk" >&2
+# Use the requested NDK version explicitly (do NOT auto-pick highest)
+NDK_DIR="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
+if [ ! -d "${NDK_DIR}" ]; then
+  echo "Requested NDK ${ANDROID_NDK_VERSION} not found at ${NDK_DIR}" >&2
+  ls -la "${ANDROID_SDK_ROOT}/ndk/" || true
   exit 1
 fi
 echo "Using NDK at ${NDK_DIR}"
 
-# -------- Build libtun2socks.so (Go, arm64) with real exports --------
+# -------- Build libtun2socks.so (Go, arm64) --------
 rm -rf core tun2socks-android || true
 mkdir -p core
 cd core
 
 go mod init example.com/tun2socks-wrapper
 
-# Pull tun2socks v1 (stable API) to avoid CI surprises
+# Ensure both module and subpackage are present for the import path
 go get "github.com/xjasonlyu/tun2socks@v1.18.3"
+go get "github.com/xjasonlyu/tun2socks/engine@v1.18.3"
 go mod tidy
 
-# Export native functions used by JNI and call v1 engine
 cat > main.go <<'EOF'
 package main
 /*
@@ -110,19 +110,17 @@ func tun2socks_info() *C.char {
 func main() {}
 EOF
 
-# Cross-compile for Android arm64 with NDK clang
+# Cross-compile with the pinned NDK clang
 CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
 export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
 go build -buildmode=c-shared -o libtun2socks.so
 
 cd ..
 
-# -------- Android library project with JNI wrapper --------
+# -------- Android library with JNI wrapper --------
 mkdir -p tun2socks-android/src/main/java/com/example/tun2socks
 mkdir -p tun2socks-android/src/main/cpp
 mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
-
-# Include the Go-built shared library
 cp core/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
 # Java API
@@ -141,7 +139,7 @@ public class Tun2Socks {
 }
 EOF
 
-# JNI bridge that forwards to Go exports in libtun2socks.so
+# JNI bridge
 cat > tun2socks-android/src/main/cpp/tun2socks_jni.c <<'EOF'
 #include <jni.h>
 #include <dlfcn.h>
@@ -198,7 +196,7 @@ LOCAL_LDLIBS    := -llog -ldl
 include $(BUILD_SHARED_LIBRARY)
 EOF
 
-# Module build.gradle (pin AGP to 8.6)
+# Module build.gradle (AGP 8.6, match NDK)
 cat > tun2socks-android/build.gradle <<'EOF'
 plugins { id 'com.android.library' }
 
@@ -219,22 +217,16 @@ android {
         }
     }
 
-    // Use ndk-build for the JNI bridge
     externalNativeBuild {
-        ndkBuild {
-            path "src/main/cpp/Android.mk"
-        }
+        ndkBuild { path "src/main/cpp/Android.mk" }
     }
 
-    // Pin the NDK version to what CI installed (prevents mismatches)
     ndkVersion "26.1.10909125"
 }
 EOF
 
-# Root settings.gradle
+# Root Gradle setup (AGP 8.6 requires Gradle 8.6+)
 echo "include ':tun2socks-android'" > settings.gradle
-
-# Root build.gradle (AGP 8.6 requires Gradle 8.6+)
 cat > build.gradle <<'EOF'
 buildscript {
     repositories { google(); mavenCentral() }
@@ -243,8 +235,6 @@ buildscript {
 allprojects { repositories { google(); mavenCentral() } }
 EOF
 
-# -------- Pin Gradle wrapper to 8.6 and build --------
+# -------- Pin wrapper and build --------
 gradle wrapper --gradle-version 8.6
-
-# Build AAR using wrapper from repo root
 ./gradlew :tun2socks-android:assembleRelease --stacktrace
