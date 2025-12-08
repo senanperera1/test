@@ -50,6 +50,8 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Build libtun2socks.so (arm64) with v2→v1 fallback
+        env:
+          NDK_DIR: ${{ env.NDK_DIR }}
         run: |
           set -euxo pipefail
 
