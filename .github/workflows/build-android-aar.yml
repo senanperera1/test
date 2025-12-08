@@ -1,4 +1,4 @@
-name: Build tun2socks Binary
+name: Build tun2socks Binary (Fixed)
 
 on:
   workflow_dispatch:
@@ -24,8 +24,9 @@ jobs:
       - name: Build tun2socks for arm64-v8a
         run: |
           mkdir -p build/arm64-v8a
-          # Use the NDK's clang compiler to build the C source
+          # FIX: Added -I . to tell the compiler where to find the header files
           $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
+            -I . \
             -o build/arm64-v8a/tun2socks \
             tun2socks/tun2socks.c
 
