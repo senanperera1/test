@@ -1,4 +1,4 @@
-name: Build SagerNet Tun2Socks AAR (Final Corrected)
+name: Build SagerNet Tun2Socks AAR (Final)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
           cd tun2socks
           go mod init github.com/myuser/tun2socks
           
-          # This 'replace' directive is the fix for the module path mismatch.
+          # This 'replace' directive correctly points to the SagerNet repository.
           go mod edit -replace=github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
           
           # Get the necessary dependencies.
@@ -53,14 +53,14 @@ jobs:
               "os"
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
-              _ "golang.org/x/mobile/bind" // This blank import forces Go to keep the 'bind' package.
+              _ "golang.org/x/mobile/bind" // This blank import is critical.
           )
 
           // This is a blocking call that runs the tun2socks loop.
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
               
-              // FIX: The correct function name is NewSocks5Handler.
+              // THE FIX: The correct function name is NewSocks5Handler. I was wrong before.
               proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
 
               core.RegisterTCPConnHandler(proxy)
