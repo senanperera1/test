@@ -32,8 +32,8 @@ jobs:
     
     - name: Install NDK
       run: |
-        sdkmanager --install "ndk;25.2.9519653" "platforms;android-30"
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+        sdkmanager --install "ndk;23.1.7779620" "platforms;android-33"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/23.1.7779620" >> $GITHUB_ENV
     
     - name: Install gomobile
       run: |
