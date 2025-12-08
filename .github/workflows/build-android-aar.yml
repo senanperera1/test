@@ -31,7 +31,6 @@ jobs:
 
       - name: Install NDK
         run: |
-          set -euxo pipefail
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "${ANDROID_NDK_PACKAGE}"
           NDK_DIR="$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | head -n1)"
           echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
@@ -43,7 +42,6 @@ jobs:
 
       - name: Build libtun2socks.so (arm64) with exported C symbols
         run: |
-          set -euxo pipefail
           mkdir -p core && cd core
           go mod init example.com/tun2socks-wrapper
           go get github.com/xjasonlyu/tun2socks/v2@latest
@@ -96,8 +94,8 @@ jobs:
               return 0
             }
             cfg := buildConfig(int(fd), C.GoString(proxy))
-            // Latest v2 provides InsertConfig for JSON strings
-            ts.InsertConfig(cfg)
+            // v2.6.0 provides InsertJSON for config strings
+            ts.InsertJSON(cfg)
             ts.Start()
             started = true
             return 0
@@ -115,7 +113,7 @@ jobs:
 
           //export tun2socks_info
           func tun2socks_info() *C.char {
-            s := fmt.Sprintf("tun2socks v2: started=%v", started)
+            s := fmt.Sprintf("tun2socks v2.6.0: started=%v", started)
             return C.CString(s)
           }
 
@@ -221,4 +219,11 @@ jobs:
               repositories { google(); mavenCentral() }
               dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
           }
-          allprojects { repositories { google
+          allprojects { repositories { google(); mavenCentral() } }
+          EOF
+
+      - name: Initialize Gradle wrapper
+        run: gradle wrapper --gradle-version 8.2
+
+      - name: Build AAR (release)
+        run: ./gradlew :tun2s
