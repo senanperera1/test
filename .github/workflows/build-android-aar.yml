@@ -1,4 +1,4 @@
-name: Build go-tun2socks AAR (arm64)
+name: Build Final tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -6,230 +6,104 @@ on:
 jobs:
   build-aar:
     runs-on: ubuntu-latest
-    env:
-      JAVA_VERSION: '17'
-      ANDROID_COMPILE_SDK: 34
-      ANDROID_BUILD_TOOLS: 34.0.0
-      ANDROID_NDK_PACKAGE: ndk;26.3.11579264
-      GO_VERSION: '1.21.13'
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: ${{ env.ANDROID_COMPILE_SDK }}
-          components: build-tools;${{ env.ANDROID_BUILD_TOOLS }}
-
-      - name: Install NDK
-        run: |
-          set -euxo pipefail
-          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "${ANDROID_NDK_PACKAGE}"
-          NDK_DIR="$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | head -n1)"
-          echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: '1.22'
 
-      - name: Build libtun2socks.so (arm64) using go-tun2socks
+      - name: Install gomobile
         run: |
-          set -euxo pipefail
-          mkdir -p core && cd core
-          go mod init example.com/tun2socks-wrapper
-          go get github.com/eycorsican/go-tun2socks@latest
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
 
-          cat > main.go <<'EOF'
-          package main
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Install NDK
+        run: sdkmanager "ndk;26.1.10909125"
 
-          /*
-          #include <stdlib.h>
-          */
-          import "C"
-
+      - name: Clone xjasonlyu/tun2socks repository
+        uses: actions/checkout@v4
+        with:
+          repository: xjasonlyu/tun2socks
+          path: tun2socks_source
+          
+      - name: Build and Package AAR
+        run: |
+          set -e
+          
+          # --- 1. Create Go Wrapper ---
+          mkdir -p wrapper
+          cd wrapper
+          
+          go mod init github.com/myuser/tun2socks
+          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../tun2socks_source
+          
+          cat <<'EOF' > tun2socks.go
+          package tun2socks
           import (
-            "fmt"
-            "strings"
-            "time"
-
-            "github.com/eycorsican/go-tun2socks/common/log"
-            "github.com/eycorsican/go-tun2socks/core"
-            tun2socks "github.com/eycorsican/go-tun2socks/tun2socks"
-            "github.com/eycorsican/go-tun2socks/proxy/socks"
+              "context"
+              "fmt"
+              "log"
+              "github.com/xjasonlyu/tun2socks/v2/core"
+              "github.com/xjasonlyu/tun2socks/v2/proxy"
+              "github.com/xjasonlyu/tun2socks/v2/tun"
+              _ "golang.org/x/mobile/bind"
           )
-
-          var started bool
-
-          //export tun2socks_start
-          func tun2socks_start(fd C.int, proxy *C.char) C.int {
-            if started {
-              return 0
-            }
-            p := C.GoString(proxy)
-            if !strings.Contains(p, "://") {
-              p = "socks5://" + p
-            }
-            addr := strings.TrimPrefix(p, "socks5://")
-            if !strings.Contains(addr, ":") {
-              addr = addr + ":1080"
-            }
-
-            log.SetLevel(log.Info)
-
-            tcpHandler := socks.NewTCPHandler("tcp", addr, "", "", nil)
-            udpHandler := socks.NewUDPHandler("udp", addr, "", "")
-
-            core.RegisterTCPConnectionHandler(tcpHandler)
-            core.RegisterUDPConnectionHandler(udpHandler)
-
-            if err := tun2socks.Start(int(fd), 1500, false); err != nil {
-              return -1
-            }
-
-            time.Sleep(100 * time.Millisecond)
-            started = true
-            return 0
-          }
-
-          //export tun2socks_stop
-          func tun2socks_stop() C.int {
-            if !started {
-              return 0
-            }
-            tun2socks.Stop()
-            started = false
-            return 0
-          }
-
-          //export tun2socks_info
-          func tun2socks_info() *C.char {
-            return C.CString(fmt.Sprintf("go-tun2socks: started=%v", started))
-          }
-
-          func main() {}
-          EOF
-
-          CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
-          export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
-          go build -buildmode=c-shared -o libtun2socks.so
-
-          cd ..
-          mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
-          cp core/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
-
-      - name: Create Android library with JNI bridge and Gradle project
-        run: |
-          set -euxo pipefail
-          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
-
-          cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
-          package com.example.tun2socks;
-
-          public class Tun2Socks {
-              static {
-                  System.loadLibrary("tun2socks_jni");
-                  System.loadLibrary("tun2socks");
-              }
-
-              public static native int start(int tunFd, String proxyUrl);
-              public static native int stop();
-              public static native String coreInfo();
-          }
-          EOF
-
-          cat > tun2socks-android/src/main/cpp/tun2socks_jni.c <<'EOF'
-          #include <jni.h>
-          #include <dlfcn.h>
-
-          typedef int (*start_fn)(int fd, const char *url);
-          typedef int (*stop_fn)();
-          typedef const char* (*info_fn)();
-
-          static void *handle; static start_fn core_start; static stop_fn core_stop; static info_fn core_info;
-
-          static void ensure_loaded() {
-              if (handle) return;
-              handle = dlopen("libtun2socks.so", RTLD_NOW);
-              core_start = (start_fn)dlsym(handle, "tun2socks_start");
-              core_stop  = (stop_fn)dlsym(handle, "tun2socks_stop");
-              core_info  = (info_fn)dlsym(handle, "tun2socks_info");
-          }
-
-          JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env,jclass,jint fd,jstring proxyUrl){
-              ensure_loaded(); if(!core_start){return -2;}
-              const char *url=(*env)->GetStringUTFChars(env,proxyUrl,0);
-              int rc=core_start(fd,url);
-              (*env)->ReleaseStringUTFChars(env,proxyUrl,url);
-              return rc;
-          }
-
-          JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env,jclass){
-              ensure_loaded(); if(!core_stop){return -2;}
-              return core_stop();
-          }
-
-          JNIEXPORT jstring JNICALL Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env,jclass){
-              ensure_loaded(); if(!core_info) return (*env)->NewStringUTF(env,"info not exported");
-              const char *s=core_info();
-              return (*env)->NewStringUTF(env,s?s:"null");
-          }
-          EOF
-
-          cat > tun2socks-android/src/main/cpp/Android.mk <<'EOF'
-          LOCAL_PATH := $(call my-dir)
-          include $(CLEAR_VARS)
-          LOCAL_MODULE    := tun2socks_jni
-          LOCAL_SRC_FILES := tun2socks_jni.c
-          LOCAL_LDLIBS    := -llog -ldl
-          include $(BUILD_SHARED_LIBRARY)
-          EOF
-
-          cat > tun2socks-android/build.gradle <<'EOF'
-          plugins { id 'com.android.library' }
-          android {
-              namespace "com.example.tun2socks"
-              compileSdk 34
-              defaultConfig {
-                  minSdk 21
-                  targetSdk 34
-                  ndk { abiFilters 'arm64-v8a' }
-              }
-              sourceSets {
-                  main {
-                      java.srcDirs = ['src/main/java']
-                      jniLibs.srcDirs = ['src/main/jniLibs']
+          var (
+              ctx    context.Context
+              cancel context.CancelFunc
+          )
+          func Start(fd int, proxyURL string) error {
+              ctx, cancel = context.WithCancel(context.Background())
+              mtu := 1500
+              tunDev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
+              if err != nil { return fmt.Errorf("failed to open tun device: %w", err) }
+              proxyHandler, err := proxy.New(proxyURL)
+              if err != nil { return fmt.Errorf("failed to create proxy handler: %w", err) }
+              lwipStack := core.NewLWIPStack()
+              core.RegisterTCPConnHandler(proxyHandler)
+              core.RegisterUDPConnHandler(proxyHandler)
+              core.RegisterOutputFn(func(data []byte, writeCount int) { tunDev.Write(data[:writeCount]) })
+              log.Println("xjasonlyu/tun2socks library is running")
+              go lwipStack.Start()
+              packet := make([]byte, mtu)
+              for {
+                  select {
+                  case <-ctx.Done():
+                      return nil
+                  default:
+                      n, err := tunDev.Read(packet)
+                      if err != nil { return err }
+                      lwipStack.Write(packet[:n])
                   }
               }
-              externalNativeBuild { ndkBuild { path "src/main/cpp/Android.mk" } }
           }
-          EOF
-
-          echo "include ':tun2socks-android'" > settings.gradle
-          cat > build.gradle <<'EOF'
-          buildscript {
-              repositories { google(); mavenCentral() }
-              dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
+          func Stop() {
+              if cancel != nil { cancel() }
+              log.Println("xjasonlyu/tun2socks library is stopping")
           }
-          allprojects { repositories { google(); mavenCentral() } }
-          EOF
+EOF
 
-      - name: Initialize Gradle wrapper
-        run: gradle wrapper --gradle-version 8.2
+          # --- 2. Get Dependencies ---
+          go get golang.org/x/mobile/bind
+          go get github.com/xjasonlyu/tun2socks/v2
+          go mod tidy
+          
+          # --- 3. Build AAR with gomobile ---
+          # This command creates the .so, the JNI bindings, and the .aar package
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../tun2socks.aar .
+          ls -lh ../tun2socks.aar
 
-      - name: Build AAR (release)
-        run: ./gradlew :tun2socks-android:assembleRelease --stacktrace
-
-      - name: Upload artifact
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-aar-arm64
-          path: tun2socks-android/build/outputs/aar/*.aar
+          name: tun2socks-aar
+          path: tun2socks.aar
