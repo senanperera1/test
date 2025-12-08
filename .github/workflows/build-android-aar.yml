@@ -213,6 +213,7 @@ jobs:
     - name: Create Release
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       uses: softprops/action-gh-release@v1
+      continue-on-error: true
       with:
         tag_name: build-${{ github.run_number }}
         files: |
@@ -235,3 +236,14 @@ jobs:
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Show success message
+      run: |
+        echo "✅ BUILD SUCCESSFUL!"
+        echo ""
+        echo "Your tun2socks.aar has been built successfully!"
+        echo ""
+        echo "📦 Download it from the 'Artifacts' section above"
+        echo ""
+        echo "Files built:"
+        find . -name "*.aar" -exec ls -lh {} \;
