@@ -1,4 +1,4 @@
-name: Build SagerNet Tun2Socks AAR (Final)
+name: Build SagerNet Tun2Socks AAR
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ jobs:
   build-aar:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Setup Javauses: actions/setup-java@v4
+    steps:      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -38,11 +38,8 @@ jobs:
           cd tun2socks
           go mod init github.com/myuser/tun2socks
           
-          # Point the 'eycorsican' module to the 'SagerNet' repository
-          go mod edit -replace github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
-          
-          # Get the module using its original name
-          go get github.com/eycorsican/go-tun2socks
+          # Use the active and maintained SagerNet fork
+          go get github.com/SagerNet/go-tun2socks@latest
           go get golang.org/x/mobile/bind
           
           # Create the Go wrapper file
@@ -51,25 +48,27 @@ jobs:
 
           import (
               "os"
-              "github.com/eycorsican/go-tun2socks/core"
-              "github.com/eycorsican/go-tun2socks/proxy/socks"
-              
-              // CRITICAL: This blank import forces Go to keep the 'bind' package.
+              "github.com/SagerNet/go-tun2socks/core"
+              "github.com/SagerNet/go-tun2socks/proxy/socks"
               _ "golang.org/x/mobile/bind"
           )
 
           // Start the tun2socks core loop. This is a blocking call.
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
+
               proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
+
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
               core.RegisterOutputFn(func(data []byte) (int, error) {
                   return f.Write(data)
               })
+
               core.Start()
           }
 
+          // Stop the tun2socks core loop
           func Stop() {
               core.Stop()
           }
