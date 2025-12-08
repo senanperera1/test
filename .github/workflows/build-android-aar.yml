@@ -1,131 +1,36 @@
-name: Build Custom Xray Wrapper (Final JSON Fix)
+name: Build tun2socks Binary
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-aar:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.21"
-
-      - name: Install gomobile
+      - name: Install NDK
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
-
-      - name: Install Android SDK + NDK
-        run: |
-          mkdir -p $HOME/android-sdk/cmdline-tools
-          curl -o sdk-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q sdk-tools.zip -d $HOME/android-sdk/cmdline-tools
-          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
-          
+          mkdir -p $HOME/android-sdk
           export ANDROID_HOME=$HOME/android-sdk
-          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+          curl -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q ndk.zip -d $HOME/android-sdk/
+          echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
+
+      - name: Clone badvpn Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ambrop72/badvpn
           
-          yes | sdkmanager --licenses
-          sdkmanager "platforms;android-21" "ndk;26.1.10909125" "build-tools;34.0.0"
-
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-
-      - name: Create Custom Wrapper
+      - name: Build tun2socks for arm64-v8a
         run: |
-          mkdir mywrapper
-          cd mywrapper
-          
-          go mod init github.com/myuser/libv2ray
-          
-          # Create libv2ray.go
-          cat <<EOF > libv2ray.go
-          package libv2ray
+          mkdir -p build/arm64-v8a
+          # Use the NDK's clang compiler to build the C source
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
+            -o build/arm64-v8a/tun2socks \
+            tun2socks/tun2socks.c
 
-          import (
-              "fmt"
-              "strings"
-              
-              // Standard imports
-              _ "github.com/xtls/xray-core/main/distro/all"
-              
-              // CRITICAL: JSON config parser registration
-              _ "github.com/xtls/xray-core/main/json"
-              
-              // CRITICAL: TUN registration
-              _ "github.com/xtls/xray-core/proxy/tun"
-              
-              core "github.com/xtls/xray-core/core"
-              "github.com/xtls/xray-core/infra/conf/serial"
-              _ "golang.org/x/mobile/bind"
-          )
-
-          type V2RayPoint struct {
-              instance *core.Instance
-              running  bool
-          }
-
-          func NewV2RayPoint() *V2RayPoint {
-              return &V2RayPoint{}
-          }
-
-          func (v *V2RayPoint) RunLoop(configContent string) error {
-              config, err := serial.LoadJSONConfig(strings.NewReader(configContent))
-              if err != nil {
-                  return fmt.Errorf("failed to load config: %v", err)
-              }
-
-              server, err := core.New(config)
-              if err != nil {
-                  return fmt.Errorf("failed to create instance: %v", err)
-              }
-
-              v.instance = server
-              if err := server.Start(); err != nil {
-                  return fmt.Errorf("failed to start server: %v", err)
-              }
-              
-              v.running = true
-              return nil
-          }
-
-          func (v *V2RayPoint) StopLoop() error {
-              if v.instance != nil {
-                  v.instance.Close()
-              }
-              v.running = false
-              return nil
-          }
-          
-          func (v *V2RayPoint) IsRunning() bool {
-              return v.running
-          }
-          EOF
-          
-          go get golang.org/x/mobile/bind
-          go get github.com/xtls/xray-core@v1.8.4
-          
-          go mod tidy
-
-      - name: Build Custom AAR
-        working-directory: mywrapper
-        run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libv2ray.aar .
-          ls -lh ../libv2ray.aar
-
-      - name: Upload AAR
+      - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
-          name: libv2ray-custom-aar
-          path: "libv2ray.aar"
+          name: tun2socks-binary-arm64
+          path: build/arm64-v8a/tun2socks
