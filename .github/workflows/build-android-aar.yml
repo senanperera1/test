@@ -2,28 +2,25 @@ name: Build tun2socks AAR
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.21.x"
 
-      - name: Install prerequisites
+      - name: Install deps
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y unzip wget curl zip
+          sudo apt update
+          sudo apt install -y wget unzip zip
 
-      - name: Install Android SDK + NDK
+      - name: Install Android NDK + SDK
         run: |
           mkdir -p $HOME/android/cmdline-tools
           cd $HOME/android
@@ -36,38 +33,40 @@ jobs:
             "platform-tools" "platforms;android-33" "ndk;25.2.9519653"
 
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n1)" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$(ls -d $ANDROID_SDK_ROOT/ndk/*)" >> $GITHUB_ENV
 
-      - name: Install gomobile
+      - name: Install gomobile tools
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Prepare Wrapper Project (uses working tun2socks fork)
+      - name: Prepare wrapper (uses fixed commit)
         run: |
           rm -rf tun2socks-wrapper
           mkdir tun2socks-wrapper
           cd tun2socks-wrapper
 
-          # WORKING fork that has Shadowsocks
-          git clone --depth 1 https://github.com/xjasonlyu/tun2socks.git core
+          # Correct commit with shadow/socks/tun present
+          git clone https://github.com/xjasonlyu/tun2socks.git core
+          cd core
+          git checkout 7e644cf441ce49d497400df9e7d56a67c9f7f9d4
+          cd ..
 
           echo "module tun2socks-wrapper" > go.mod
           echo "" >> go.mod
-          echo "go 1.22" >> go.mod
+          echo "go 1.21" >> go.mod
           echo "" >> go.mod
           echo "require github.com/xjasonlyu/tun2socks v0.0.0" >> go.mod
           echo "replace github.com/xjasonlyu/tun2socks => ./core" >> go.mod
 
-          # generate wrapper.go
+          # wrapper.go
           echo "package tun2socks" > wrapper.go
           echo "" >> wrapper.go
           echo "import (" >> wrapper.go
           echo "  \"io\"" >> wrapper.go
           echo "  \"log\"" >> wrapper.go
           echo "  \"os\"" >> wrapper.go
-          echo "" >> wrapper.go
           echo "  core \"github.com/xjasonlyu/tun2socks/core\"" >> wrapper.go
           echo "  \"github.com/xjasonlyu/tun2socks/proxy/socks\"" >> wrapper.go
           echo "  \"github.com/xjasonlyu/tun2socks/proxy/shadowsocks\"" >> wrapper.go
@@ -98,21 +97,20 @@ jobs:
           echo "" >> wrapper.go
           echo "func StopTun() { if tunIF != nil { _ = tunIF.Close(); tunIF = nil } }" >> wrapper.go
           echo "" >> wrapper.go
-          echo "func SetLog(enable bool) {" >> wrapper.go
-          echo "  if enable { core.SetLogger(log.New(os.Stdout, \"[tun2socks] \", log.LstdFlags)) }" >> wrapper.go
+          echo "func SetLog(e bool) {" >> wrapper.go
+          echo "  if e { core.SetLogger(log.New(os.Stdout, \"[tun2socks] \", log.LstdFlags)) }" >> wrapper.go
           echo "  else { core.SetLogger(log.New(io.Discard, \"\", 0)) }" >> wrapper.go
           echo "}" >> wrapper.go
 
           go mod tidy
 
-      - name: Initialize gomobile
-        run: |
-          gomobile init
+      - name: gomobile init
+        run: gomobile init
 
       - name: Build AAR
         run: |
           cd tun2socks-wrapper
-          gomobile bind -v -androidapi=21 -o tun2socks-full.aar .
+          gomobile bind -androidapi=21 -o tun2socks-full.aar .
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
