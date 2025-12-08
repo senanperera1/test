@@ -7,21 +7,8 @@ ANDROID_API=${ANDROID_API:-34}
 ANDROID_BUILD_TOOLS=${ANDROID_BUILD_TOOLS:-34.0.0}
 ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-26.1.10909125} # install exactly this
 
-# Helper: retry a command up to N times with sleep
-retry() {
-  local tries=$1; shift
-  local delay=$1; shift
-  local n=0
-  until "$@"; do
-    n=$((n+1))
-    if [ "$n" -ge "$tries" ]; then
-      echo "Command failed after $tries attempts: $*" >&2
-      return 1
-    fi
-    echo "Retry $n/$tries: $*"
-    sleep "$delay"
-  done
-}
+# Helper: retry
+retry() { local t=$1; shift; local d=$1; shift; local n=0; until "$@"; do n=$((n+1)); [ "$n" -ge "$t" ] && return 1; sleep "$d"; done; }
 
 # -------- Install cmdline-tools + accept licenses --------
 if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
@@ -33,39 +20,27 @@ if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
 fi
 
 export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-
-# Licenses: non-interactive, ignore Broken pipe if stdin closes early
 yes | sdkmanager --licenses || true
 
-# Install SDK components (retry for flakiness)
 retry 3 10 sdkmanager "platform-tools" \
                      "platforms;android-${ANDROID_API}" \
                      "build-tools;${ANDROID_BUILD_TOOLS}" \
                      "ndk;${ANDROID_NDK_VERSION}"
 
-# Use exactly the requested NDK (avoid auto-picking highest)
 NDK_DIR="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
-if [ ! -d "${NDK_DIR}" ]; then
-  echo "Requested NDK ${ANDROID_NDK_VERSION} not found at ${NDK_DIR}" >&2
-  ls -la "${ANDROID_SDK_ROOT}/ndk/" || true
-  exit 1
-fi
+[ -d "${NDK_DIR}" ] || (echo "NDK missing at ${NDK_DIR}" >&2; ls -la "${ANDROID_SDK_ROOT}/ndk/"; exit 1)
 echo "Using NDK at ${NDK_DIR}"
 
-# -------- Build libtun2socks.so (Go v2, arm64) with resilient wrapper --------
+# -------- Build libtun2socks.so using go-tun2socks --------
 rm -rf core tun2socks-android || true
 mkdir -p core
 cd core
 
 go mod init example.com/tun2socks-wrapper
-
-# Add v2 module and engine; tidy with retries
-retry 3 5 go get "github.com/xjasonlyu/tun2socks/v2@v2.6.0"
-retry 3 5 go get "github.com/xjasonlyu/tun2socks/v2/engine@v2.6.0"
+# Pin to a known stable release
+retry 3 5 go get github.com/eycorsican/go-tun2socks@v1.16.6
 go mod tidy
 
-# The wrapper tries InsertJSON first; if InsertJSON signature changes,
-# it falls back to a simplified Start-only path via a tiny adapter.
 cat > main.go <<'EOF'
 package main
 /*
@@ -74,43 +49,64 @@ package main
 import "C"
 
 import (
-    "encoding/json"
     "fmt"
+    "net"
     "strings"
+    "time"
 
-    engine "github.com/xjasonlyu/tun2socks/v2/engine"
+    t2s "github.com/eycorsican/go-tun2socks/core"
+    lwip "github.com/eycorsican/go-tun2socks/core/lwip"
+    socks "github.com/eycorsican/go-tun2socks/proxy/socks"
 )
 
 var started bool
-
-func buildConfig(fd int, proxy string) string {
-    p := proxy
-    if !strings.Contains(p, "://") {
-        p = "socks5://" + p
-    }
-    cfg := map[string]any{
-        "device":   map[string]any{"fdbased": map[string]any{"fd": fd}},
-        "proxy":    map[string]any{"socks5":  map[string]any{"addr": p}},
-        "netstack": map[string]any{"enable":  true},
-    }
-    b, _ := json.Marshal(cfg)
-    return string(b)
-}
 
 //export tun2socks_start
 func tun2socks_start(fd C.int, proxy *C.char) C.int {
     if started {
         return 0
     }
-    conf := buildConfig(int(fd), C.GoString(proxy))
-    // Preferred path: Insert config JSON then start
-    if err := engine.InsertJSON(conf); err != nil {
-        // Fallback: attempt Start with minimal side effects if InsertJSON signature differs
-        // Note: engine.Start() uses last inserted config; if insert fails, Start won't apply changes.
-        // In that case we return an error to signal the JNI.
+    // Normalize proxy: ensure scheme
+    addr := C.GoString(proxy)
+    if !strings.Contains(addr, "://") {
+        addr = "socks5://" + addr
+    }
+
+    // Create SOCKS proxy handlers
+    tcpHandler, err := socks.NewTCPHandler(addr, socks.TCPHandlerOptions{
+        // Optional timeouts tuned for Android
+        ConnectTimeout:  10 * time.Second,
+        HandshakeTimeout:10 * time.Second,
+    })
+    if err != nil {
         return -1
     }
-    engine.Start()
+    udpHandler, err := socks.NewUDPHandler(addr, socks.UDPHandlerOptions{})
+    if err != nil {
+        return -1
+    }
+
+    // Build LWIP netstack and wire to fd-based device
+    var dev t2s.Device
+    dev, err = lwip.NewLWIPStack()
+    if err != nil {
+        return -1
+    }
+
+    // fdbased device from integer fd
+    tunFile := &fileFromFD{Fd: int(fd)}
+    dev, err = t2s.NewFdbasedDevice(int(fd), 1500)
+    if err != nil {
+        return -1
+    }
+
+    // Start core
+    t2s.RegisterTCPConnectionHandler(tcpHandler)
+    t2s.RegisterUDPConnectionHandler(udpHandler)
+
+    go dev.Read(t2s.InputPacket)
+    t2s.SetDefaultDevice(dev)
+
     started = true
     return 0
 }
@@ -120,20 +116,23 @@ func tun2socks_stop() C.int {
     if !started {
         return 0
     }
-    engine.Stop()
+    t2s.Close()
     started = false
     return 0
 }
 
 //export tun2socks_info
 func tun2socks_info() *C.char {
-    return C.CString(fmt.Sprintf("tun2socks v2: started=%v", started))
+    return C.CString(fmt.Sprintf("go-tun2socks: started=%v", started))
 }
+
+// Minimal file wrapper (placeholder to keep references explicit)
+type fileFromFD struct{ Fd int }
 
 func main() {}
 EOF
 
-# Cross-compile for Android arm64 with NDK clang; include common CGO flags
+# Cross-compile
 CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
 export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
 export CGO_CFLAGS="-fPIC"
@@ -210,7 +209,7 @@ JNIEXPORT jstring JNICALL Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *
 }
 EOF
 
-# NDK build file for JNI
+# NDK build file
 cat > tun2socks-android/src/main/cpp/Android.mk <<'EOF'
 LOCAL_PATH := $(call my-dir)
 
@@ -221,7 +220,7 @@ LOCAL_LDLIBS    := -llog -ldl
 include $(BUILD_SHARED_LIBRARY)
 EOF
 
-# Module build.gradle (AGP 8.6, match NDK)
+# Gradle module
 cat > tun2socks-android/build.gradle <<'EOF'
 plugins { id 'com.android.library' }
 
@@ -250,7 +249,7 @@ android {
 }
 EOF
 
-# Root Gradle setup (AGP 8.6 requires Gradle 8.6+)
+# Root Gradle setup (AGP 8.6 + Gradle 8.6)
 echo "include ':tun2socks-android'" > settings.gradle
 cat > build.gradle <<'EOF'
 buildscript {
@@ -260,10 +259,6 @@ buildscript {
 allprojects { repositories { google(); mavenCentral() } }
 EOF
 
-# Gradle wrapper pinned to 8.6 and robust flags
+# Wrapper and build
 gradle wrapper --gradle-version 8.6
-
-# Build AAR using wrapper
-# Add flags to avoid daemon issues and speed repeated builds on CI
-export GRADLE_OPTS="-Dorg.gradle.jvmargs='-Xmx2g -Dfile.encoding=UTF-8' -Dorg.gradle.daemon=false"
 ./gradlew :tun2socks-android:assembleRelease --stacktrace --no-daemon
