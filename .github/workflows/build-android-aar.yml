@@ -1,133 +1,103 @@
-name: Build xjasonlyu-tun2socks AAR
+name: Build tun2socks .so for Android
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  build-aar:
+  build-so:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Setup Java
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
-      - name: Setup Go
+      - name: Install Android SDK and NDK r26c
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk: 26.1.10909125
+          cmake: 3.22.1
+          components: build-tools;34.0.0
+
+      - name: Set ANDROID_NDK_HOME
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      - name: Set up Go 1.22
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: '1.22'
 
-      - name: Install gomobile
+      - name: Clone tun2socks
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
+          git clone https://github.com/xjasonlyu/tun2socks.git
+          echo "Cloned xjasonlyu/tun2socks"
 
-      - name: Install Android SDK + NDK
+      - name: Build libtun2socks.so (arm64-v8a)
+        env:
+          ANDROID_API: '21'
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
-          mkdir -p $HOME/android-sdk
-          export ANDROID_HOME=$HOME/android-sdk
-          curl -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
-          unzip -q ndk.zip -d $HOME/android-sdk/
-          echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
+          set -e
+          cd tun2socks
 
-      - name: Create Tun2Socks Wrapper from xjasonlyu/tun2socks
+          # Use NDK Clang for aarch64 targeting API 21
+          export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++"
+
+          # Enable cgo and target Android arm64
+          export CGO_ENABLED=1
+          export GOOS=android
+          export GOARCH=arm64
+
+          # Build shared library from cmd/tun2socks
+          mkdir -p ../out/jniLibs/arm64-v8a
+          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/arm64-v8a/libtun2socks.so ./cmd/tun2socks
+
+          # Provide a minimal header (produced by c-shared mode)
+          ls -lah ../out/jniLibs/arm64-v8a
+
+      - name: Build libtun2socks.so (armeabi-v7a)
+        env:
+          ANDROID_API: '21'
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
-          mkdir -p workspace/wrapper
-          cd workspace
+          set -e
+          cd tun2socks
 
-          # 1. Clone the repository you chose
-          git clone https://github.com/xjasonlyu/tun2socks.git library_src
-          
-          # 2. Navigate into our wrapper directory
-          cd wrapper
-          go mod init github.com/myuser/tun2socks
-          
-          # 3. Tell Go to use the local source code for the library
-          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../library_src
-          
-          # 4. Create our Go wrapper file
-          cat <<'EOF' > tun2socks.go
-          package tun2socks
+          # Use NDK Clang for armv7 targeting API 21
+          export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang"
+          export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang++"
 
-          import (
-              "context"
-              "fmt"
-              "log"
-              "github.com/xjasonlyu/tun2socks/v2/core"
-              "github.com/xjasonlyu/tun2socks/v2/proxy"
-              "github.com/xjasonlyu/tun2socks/v2/tun"
-              _ "golang.org/x/mobile/bind"
-          )
+          export CGO_ENABLED=1
+          export GOOS=android
+          export GOARCH=arm
 
-          var (
-              ctx    context.Context
-              cancel context.CancelFunc
-          )
+          mkdir -p ../out/jniLibs/armeabi-v7a
+          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/armeabi-v7a/libtun2socks.so ./cmd/tun2socks
+          ls -lah ../out/jniLibs/armeabi-v7a
 
-          func Start(fd int, proxyURL string) error {
-              ctx, cancel = context.WithCancel(context.Background())
-
-              mtu := 1500
-              tunDev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
-              if err != nil {
-                  return fmt.Errorf("failed to open tun device: %w", err)
-              }
-
-              proxyHandler, err := proxy.New(proxyURL)
-              if err != nil {
-                  return fmt.Errorf("failed to create proxy handler: %w", err)
-              }
-
-              lwipStack := core.NewLWIPStack()
-
-              core.RegisterTCPConnHandler(proxyHandler)
-              core.RegisterUDPConnHandler(proxyHandler)
-              core.RegisterOutputFn(func(data []byte, writeCount int) {
-                  tunDev.Write(data[:writeCount])
-              })
-
-              log.Println("xjasonlyu/tun2socks library is running")
-
-              go lwipStack.Start()
-              
-              packet := make([]byte, mtu)
-              for {
-                  select {
-                  case <-ctx.Done():
-                      return nil
-                  default:
-                      n, err := tunDev.Read(packet)
-                      if err != nil {
-                          return err
-                      }
-                      lwipStack.Write(packet[:n])
-                  }
-              }
-          }
-          
-          func Stop() {
-              if cancel != nil {
-                  cancel()
-              }
-              log.Println("xjasonlyu/tun2socks library is stopping")
-          }
-EOF
-          
-          # 5. Get dependencies
-          go get golang.org/x/mobile/bind
-          go get github.com/xjasonlyu/tun2socks/v2
-          go mod tidy
-
-      - name: Build Tun2Socks AAR
-        working-directory: workspace/wrapper
+      - name: Package jniLibs layout
         run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../../libtun2socks.aar .
-          ls -lh ../../libtun2socks.aar
+          set -e
+          cd out
+          # Create a zip with the exact jniLibs structure for easy drop-in
+          zip -r tun2socks-jniLibs.zip jniLibs
+          ls -lah
 
-      - name: Upload AAR
+      - name: Upload .so artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: libtun2socks-aar-xjasonlyu
-          path: "libtun2socks.aar"
+          name: tun2socks-so-android
+          path: |
+            out/jniLibs/arm64-v8a/libtun2socks.so
+            out/jniLibs/armeabi-v7a/libtun2socks.so
+            out/tun2socks-jniLibs.zip
