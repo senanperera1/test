@@ -30,10 +30,7 @@ jobs:
           mkdir -p tun2socks-android/src/main/java/tun2socks
           mkdir -p tun2socks-android/src/main/cpp
 
-          # Copy your uploaded .so file into jniLibs
-          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
-
-          # Minimal Java wrapper class
+          # Java wrapper class
           cat <<'EOF' > tun2socks-android/src/main/java/tun2socks/Tun2Socks.java
           package tun2socks;
 
@@ -66,6 +63,18 @@ jobs:
           }
           EOF
 
+          # Android.mk for JNI bridge + core sources
+          cat <<'EOF' > tun2socks-android/src/main/cpp/Android.mk
+          LOCAL_PATH := $(call my-dir)
+
+          include $(CLEAR_VARS)
+          LOCAL_MODULE    := tun2socks
+          LOCAL_SRC_FILES := tun2socks_jni.c \
+                             ../path/to/tun2socks_core.c
+          LOCAL_LDLIBS    := -llog
+          include $(BUILD_SHARED_LIBRARY)
+          EOF
+
           # Library build.gradle
           cat <<'EOF' > tun2socks-android/build.gradle
           plugins {
@@ -95,17 +104,6 @@ jobs:
                   }
               }
           }
-          EOF
-
-          # Android.mk for JNI bridge
-          cat <<'EOF' > tun2socks-android/src/main/cpp/Android.mk
-          LOCAL_PATH := $(call my-dir)
-
-          include $(CLEAR_VARS)
-          LOCAL_MODULE    := tun2socks
-          LOCAL_SRC_FILES := tun2socks_jni.c
-          LOCAL_LDLIBS    := -llog
-          include $(BUILD_SHARED_LIBRARY)
           EOF
 
           # Settings.gradle
