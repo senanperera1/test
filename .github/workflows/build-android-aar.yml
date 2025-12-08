@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (arm64, full exports)
+name: Build tun2socks AAR (arm64, stable API)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,8 @@ jobs:
       ANDROID_COMPILE_SDK: 34
       ANDROID_BUILD_TOOLS: 34.0.0
       ANDROID_NDK_PACKAGE: ndk;27.0.12077973
-      GO_VERSION: '1.24.11'
+      GO_VERSION: '1.22.6'
+      TUN2SOCKS_VERSION: 'v2.4.3'   # pinned to a version with Start(config) JSON API
 
     steps:
       - name: Checkout repository
@@ -46,46 +47,88 @@ jobs:
           set -euxo pipefail
           mkdir -p core && cd core
           go mod init example.com/tun2socks-wrapper
-          go get github.com/xjasonlyu/tun2socks/v2@latest
+          go get github.com/xjasonlyu/tun2socks/v2@${{ env.TUN2SOCKS_VERSION }}
 
           cat > main.go <<'EOF'
           package main
+
           /*
           #include <stdlib.h>
           */
           import "C"
+
           import (
+            "encoding/json"
             "fmt"
-            "github.com/xjasonlyu/tun2socks/v2/core"
+            "strings"
+            ts "github.com/xjasonlyu/tun2socks/v2/engine"
           )
-          var stack core.Stack
+
+          var started bool
+
+          // Build engine JSON for the pinned API
+          func buildConfig(fd int, proxy string) string {
+            p := proxy
+            if !strings.Contains(p, "://") {
+              p = "socks5://" + p
+            }
+            cfg := map[string]any{
+              "device": map[string]any{
+                "fdbased": map[string]any{
+                  "fd": fd,
+                },
+              },
+              "proxy": map[string]any{
+                "socks5": map[string]any{
+                  "addr": p,
+                },
+              },
+              "netstack": map[string]any{
+                "enable": true,
+              },
+            }
+            b, _ := json.Marshal(cfg)
+            return string(b)
+          }
+
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
-            if stack != nil { return 0 }
-            s, err := core.CreateStack(
-              core.WithTunFd(int(fd)),
-              core.WithSocksProxy(C.GoString(proxy)),
-            )
-            if err != nil { return -1 }
-            stack = s
+            if started {
+              return 0
+            }
+            cfg := buildConfig(int(fd), C.GoString(proxy))
+            // In v2.4.x, Start takes a JSON string and returns no value
+            ts.Start(cfg)
+            started = true
             return 0
           }
+
           //export tun2socks_stop
           func tun2socks_stop() C.int {
-            if stack == nil { return 0 }
-            stack.Close()
-            stack = nil
+            if !started {
+              return 0
+            }
+            ts.Stop()
+            started = false
             return 0
           }
+
           //export tun2socks_info
           func tun2socks_info() *C.char {
-            return C.CString(fmt.Sprintf("tun2socks stack active=%v", stack != nil))
+            s := fmt.Sprintf("tun2socks wrapper(v2.4.x): started=%v", started)
+            return C.CString(s)
           }
+
           func main() {}
           EOF
 
+          # Cross-compile for Android arm64 using NDK clang toolchain
           CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
-          export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
+          export CC
+          export CGO_ENABLED=1
+          export GOOS=android
+          export GOARCH=arm64
+
           go build -buildmode=c-shared -o libtun2socks.so
 
           cd ..
@@ -94,15 +137,18 @@ jobs:
 
       - name: Create Android library with JNI bridge
         run: |
+          set -euxo pipefail
           mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
 
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
           package com.example.tun2socks;
+
           public class Tun2Socks {
               static {
                   System.loadLibrary("tun2socks_jni");
                   System.loadLibrary("tun2socks");
               }
+
               public static native int start(int tunFd, String proxyUrl);
               public static native int stop();
               public static native String coreInfo();
@@ -113,35 +159,71 @@ jobs:
           #include <jni.h>
           #include <android/log.h>
           #include <dlfcn.h>
+          #include <string.h>
+          #include <errno.h>
+
           #define LOG_TAG "Tun2SocksJNI"
           #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
           #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
           typedef int (*start_fn)(int fd, const char *url);
           typedef int (*stop_fn)();
           typedef const char* (*info_fn)();
-          static void *handle; static start_fn core_start; static stop_fn core_stop; static info_fn core_info;
+
+          static void *handle = NULL;
+          static start_fn core_start = NULL;
+          static stop_fn  core_stop  = NULL;
+          static info_fn  core_info  = NULL;
+
           static void ensure_loaded() {
               if (handle) return;
               handle = dlopen("libtun2socks.so", RTLD_NOW);
+              if (!handle) {
+                  LOGE("dlopen failed: %s", dlerror());
+                  return;
+              }
               core_start = (start_fn)dlsym(handle, "tun2socks_start");
               core_stop  = (stop_fn)dlsym(handle, "tun2socks_stop");
               core_info  = (info_fn)dlsym(handle, "tun2socks_info");
               LOGI("Symbols: start=%p stop=%p info=%p", core_start, core_stop, core_info);
           }
-          JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env,jclass,jint fd,jstring proxyUrl){
-              ensure_loaded(); if(!core_start){LOGE("No tun2socks_start"); return -2;}
-              const char *url=(*env)->GetStringUTFChars(env,proxyUrl,0);
-              int rc=core_start(fd,url);
-              (*env)->ReleaseStringUTFChars(env,proxyUrl,url);
+
+          JNIEXPORT jint JNICALL
+          Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env, jclass, jint fd, jstring proxyUrl) {
+              ensure_loaded();
+              if (!core_start) {
+                  LOGE("No tun2socks_start symbol");
+                  return -2;
+              }
+              const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
+              errno = 0;
+              int rc = core_start(fd, url);
+              LOGI("tun2socks_start rc=%d errno=%d (%s)", rc, errno, strerror(errno));
+              (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
               return rc;
           }
-          JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env,jclass){
-              ensure_loaded(); if(!core_stop){LOGE("No tun2socks_stop"); return -2;}
-              return core_stop();
+
+          JNIEXPORT jint JNICALL
+          Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass) {
+              ensure_loaded();
+              if (!core_stop) {
+                  LOGE("No tun2socks_stop symbol");
+                  return -2;
+              }
+              errno = 0;
+              int rc = core_stop();
+              LOGI("tun2socks_stop rc=%d errno=%d (%s)", rc, errno, strerror(errno));
+              return rc;
           }
-          JNIEXPORT jstring JNICALL Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env,jclass){
-              ensure_loaded(); if(!core_info) return (*env)->NewStringUTF(env,"info not exported");
-              return (*env)->NewStringUTF(env,core_info());
+
+          JNIEXPORT jstring JNICALL
+          Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env, jclass) {
+              ensure_loaded();
+              if (!core_info) {
+                  return (*env)->NewStringUTF(env, "info not exported");
+              }
+              const char *s = core_info();
+              return (*env)->NewStringUTF(env, s ? s : "null");
           }
           EOF
 
@@ -155,14 +237,18 @@ jobs:
           EOF
 
           cat > tun2socks-android/build.gradle <<'EOF'
-          plugins { id 'com.android.library' }
+          plugins {
+              id 'com.android.library'
+          }
           android {
               namespace "com.example.tun2socks"
               compileSdk 34
               defaultConfig {
                   minSdk 21
                   targetSdk 34
-                  ndk { abiFilters 'arm64-v8a' }
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
               }
               sourceSets {
                   main {
@@ -170,7 +256,11 @@ jobs:
                       jniLibs.srcDirs = ['src/main/jniLibs']
                   }
               }
-              externalNativeBuild { ndkBuild { path "src/main/cpp/Android.mk" } }
+              externalNativeBuild {
+                  ndkBuild {
+                      path "src/main/cpp/Android.mk"
+                  }
+              }
           }
           EOF
 
@@ -181,7 +271,9 @@ jobs:
               repositories { google(); mavenCentral() }
               dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
           }
-          allprojects { repositories { google(); mavenCentral() } }
+          allprojects {
+              repositories { google(); mavenCentral() }
+          }
           EOF
 
       - name: Initialize Gradle wrapper
