@@ -1,4 +1,4 @@
-name: Build Separate Tun2Socks AAR
+name: Build Tun2Socks AAR (Local Clone)
 
 on:
   workflow_dispatch:
@@ -33,17 +33,24 @@ jobs:
           unzip -q ndk.zip -d $HOME/android-sdk/
           echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Create Tun2Socks Wrapper
+      - name: Build Tun2Socks
         run: |
-          mkdir tun2socks
-          cd tun2socks
+          mkdir workspace
+          cd workspace
+          
+          # 1. Clone the library manually to avoid "unknown revision" errors
+          git clone https://github.com/eycorsican/go-tun2socks.git library_src
+          
+          # 2. Create our wrapper folder
+          mkdir wrapper
+          cd wrapper
           go mod init github.com/myuser/tun2socks
           
-          # Get go-tun2socks (using latest commit hash for stability instead of tag)
-          go get github.com/eycorsican/go-tun2socks@master
+          # 3. Point to the local source code
+          go mod edit -replace github.com/eycorsican/go-tun2socks=../library_src
           
-          # Create wrapper
-          cat <<EOF > tun2socks.go
+          # 4. Create the Go wrapper file
+          cat <<'EOF' > tun2socks.go
           package tun2socks
 
           import (
@@ -52,31 +59,21 @@ jobs:
               "github.com/eycorsican/go-tun2socks/proxy/socks"
           )
 
-          // Simple start function
+          // Start the tun2socks core loop. 
+          // fd: File descriptor
+          // proxyAddr: IP of the SOCKS proxy (e.g., "127.0.0.1")
+          // proxyPort: Port of the SOCKS proxy (e.g., 10808)
           func Start(fd int, proxyAddr string, proxyPort int) {
-              // Create file from FD
               f := os.NewFile(uintptr(fd), "tun")
 
-              // Create SOCKS5 handler
-              // Note: Use 127.0.0.1 as default if empty
-              host := proxyAddr
-              if host == "" {
-                  host = "127.0.0.1"
-              }
-              
-              // Standard SOCKS5 handler
-              proxy := socks.NewSocks5Handler(host, uint16(proxyPort))
+              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
 
-              // Register handlers
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
-              
-              // Register output callback
               core.RegisterOutputFn(func(data []byte) (int, error) {
                   return f.Write(data)
               })
 
-              // Start the loop (blocking)
               core.Start()
           }
 
@@ -85,13 +82,13 @@ jobs:
           }
           EOF
           
+          # 5. Resolve dependencies
+          go get github.com/eycorsican/go-tun2socks
           go mod tidy
 
-      - name: Build Tun2Socks AAR
-        working-directory: tun2socks
-        run: |
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
-          ls -lh ../libtun2socks.aar
+          # 6. Build the AAR
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../../libtun2socks.aar .
+          ls -lh ../../libtun2socks.aar
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
