@@ -128,6 +128,8 @@ buildscript {
 allprojects { repositories { google(); mavenCentral() } }
 EOF
 
-cd tun2socks-android
+# Generate wrapper at repo root
 gradle wrapper --gradle-version 8.4
-./gradlew :assembleRelease --stacktrace
+
+# Build AAR using wrapper
+./gradlew :tun2socks-android:assembleRelease --stacktrace
