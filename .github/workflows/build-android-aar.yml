@@ -1,4 +1,4 @@
-name: Build SagerNet Tun2Socks AAR
+name: Build SagerNet Tun2Socks AAR (Fixed)
 
 on:
   workflow_dispatch:
@@ -39,20 +39,27 @@ jobs:
           cd tun2socks
           go mod init github.com/myuser/tun2socks
           
-          # Use the active and maintained SagerNet fork
-          go get github.com/SagerNet/go-tun2socks@latest
+          # FIX: Point the 'eycorsican' module to the 'SagerNet' repository
+          go mod edit -replace github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
           
-          # Create the Go wrapper file
+          # Now get the module using its ORIGINAL name
+          go get github.com/eycorsican/go-tun2socks
+          go get golang.org/x/mobile/bind
+          
+          # Create the Go wrapper file imports the original name
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
           import (
               "os"
-              "github.com/SagerNet/go-tun2socks/core"
-              "github.com/SagerNet/go-tun2socks/proxy/socks"
+              "github.com/eycorsican/go-tun2socks/core"
+              "github.com/eycorsican/go-tun2socks/proxy/socks"
           )
 
-          // Start the tun2socks core loop. This is a blocking call.
+          // Start the tun2socks core loop. 
+          // fd: File descriptor
+          // proxyAddr: "127.0.0.1"
+          // proxyPort: 10808
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
 
@@ -67,7 +74,6 @@ jobs:
               core.Start()
           }
 
-          // Stop the tun2socks core loop
           func Stop() {
               core.Stop()
           }
@@ -79,10 +85,3 @@ jobs:
         working-directory: tun2socks
         run: |
           gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
-          ls -lh ../libtun2socks.aar
-
-      - name: Upload AAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: libtun2socks-aar
-          path: "libtun2socks.aar"
