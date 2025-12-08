@@ -14,7 +14,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: 'xxf098/go-tun2socks-build'
-        ref: 'main'
+        ref: 'master'
     
     - name: Set up Go
       uses: actions/setup-go@v5
