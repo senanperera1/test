@@ -5,9 +5,9 @@ set -euxo pipefail
 ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
 ANDROID_API=${ANDROID_API:-34}
 ANDROID_BUILD_TOOLS=${ANDROID_BUILD_TOOLS:-34.0.0}
-ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-26.1.10909125} # pin to a CI-reliable version
+ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-26.1.10909125} # install exactly this
 
-# -------- Install cmdline-tools and SDK packages --------
+# -------- Install cmdline-tools + accept licenses --------
 if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
   wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
   mkdir -p /tmp/cmdtools
@@ -17,17 +17,14 @@ if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
 fi
 
 export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-
-# Accept licenses non-interactively; "Broken pipe" here is benign
 yes | sdkmanager --licenses || true
 
-# Install required packages
 sdkmanager "platform-tools" \
            "platforms;android-${ANDROID_API}" \
            "build-tools;${ANDROID_BUILD_TOOLS}" \
            "ndk;${ANDROID_NDK_VERSION}"
 
-# Use the requested NDK version explicitly (do NOT auto-pick highest)
+# Use exactly the requested NDK (avoid auto-picking highest)
 NDK_DIR="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
 if [ ! -d "${NDK_DIR}" ]; then
   echo "Requested NDK ${ANDROID_NDK_VERSION} not found at ${NDK_DIR}" >&2
@@ -36,16 +33,14 @@ if [ ! -d "${NDK_DIR}" ]; then
 fi
 echo "Using NDK at ${NDK_DIR}"
 
-# -------- Build libtun2socks.so (Go, arm64) --------
+# -------- Build libtun2socks.so (Go v2, arm64) --------
 rm -rf core tun2socks-android || true
 mkdir -p core
 cd core
 
 go mod init example.com/tun2socks-wrapper
-
-# Ensure both module and subpackage are present for the import path
-go get "github.com/xjasonlyu/tun2socks@v1.18.3"
-go get "github.com/xjasonlyu/tun2socks/engine@v1.18.3"
+go get "github.com/xjasonlyu/tun2socks/v2@v2.6.0"
+go get "github.com/xjasonlyu/tun2socks/v2/engine@v2.6.0"
 go mod tidy
 
 cat > main.go <<'EOF'
@@ -60,7 +55,7 @@ import (
     "fmt"
     "strings"
 
-    engine "github.com/xjasonlyu/tun2socks/engine"
+    engine "github.com/xjasonlyu/tun2socks/v2/engine"
 )
 
 var started bool
@@ -70,6 +65,7 @@ func buildConfig(fd int, proxy string) string {
     if !strings.Contains(p, "://") {
         p = "socks5://" + p
     }
+    // v2 engine accepts JSON config with device fd and proxy addr
     cfg := map[string]any{
         "device":   map[string]any{"fdbased": map[string]any{"fd": fd}},
         "proxy":    map[string]any{"socks5":  map[string]any{"addr": p}},
@@ -84,10 +80,12 @@ func tun2socks_start(fd C.int, proxy *C.char) C.int {
     if started {
         return 0
     }
-    cfg := buildConfig(int(fd), C.GoString(proxy))
-    if err := engine.Start(cfg); err != nil {
+    conf := buildConfig(int(fd), C.GoString(proxy))
+    // Insert config then start
+    if err := engine.InsertJSON(conf); err != nil {
         return -1
     }
+    engine.Start()
     started = true
     return 0
 }
@@ -104,13 +102,13 @@ func tun2socks_stop() C.int {
 
 //export tun2socks_info
 func tun2socks_info() *C.char {
-    return C.CString(fmt.Sprintf("tun2socks v1: started=%v", started))
+    return C.CString(fmt.Sprintf("tun2socks v2: started=%v", started))
 }
 
 func main() {}
 EOF
 
-# Cross-compile with the pinned NDK clang
+# Cross-compile for Android arm64 with NDK clang
 CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
 export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
 go build -buildmode=c-shared -o libtun2socks.so
