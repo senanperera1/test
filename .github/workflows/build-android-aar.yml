@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (arm64, v1.18.3)
+name: Build go-tun2socks AAR (arm64, stable)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,6 @@ jobs:
       ANDROID_BUILD_TOOLS: 34.0.0
       ANDROID_NDK_PACKAGE: ndk;26.3.11579264
       GO_VERSION: '1.21.13'
-      TUN2SOCKS_VERSION: v1.18.3
 
     steps:
       - name: Checkout repository
@@ -42,15 +41,12 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build libtun2socks.so (arm64) against v1.18.3
+      - name: Build libtun2socks.so (arm64) using go-tun2socks
         run: |
           set -euxo pipefail
-
           mkdir -p core && cd core
           go mod init example.com/tun2socks-wrapper
-
-          # Fetch the v1 engine subpackage explicitly to satisfy the import
-          go get github.com/xjasonlyu/tun2socks/engine@${TUN2SOCKS_VERSION}
+          go get github.com/eycorsican/go-tun2socks@v1.16.12
 
           cat > main.go <<'EOF'
           package main
@@ -61,48 +57,53 @@ jobs:
           import "C"
 
           import (
-            "encoding/json"
             "fmt"
             "strings"
+            "time"
 
-            ts "github.com/xjasonlyu/tun2socks/engine"
+            tun2socks "github.com/eycorsican/go-tun2socks/tun2socks"
+            "github.com/eycorsican/go-tun2socks/common/log"
+            "github.com/eycorsican/go-tun2socks/core"
+            "github.com/eycorsican/go-tun2socks/proxy/socks"
           )
 
           var started bool
-
-          func buildConfig(fd int, proxy string) string {
-            p := proxy
-            if !strings.Contains(p, "://") {
-              p = "socks5://" + p
-            }
-            cfg := map[string]any{
-              "device": map[string]any{
-                "fdbased": map[string]any{
-                  "fd": fd,
-                },
-              },
-              "proxy": map[string]any{
-                "socks5": map[string]any{
-                  "addr": p,
-                },
-              },
-              "netstack": map[string]any{
-                "enable": true,
-              },
-            }
-            b, _ := json.Marshal(cfg)
-            return string(b)
-          }
 
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
             if started {
               return 0
             }
-            cfg := buildConfig(int(fd), C.GoString(proxy))
-            if err := ts.Start(cfg); err != nil {
+            p := C.GoString(proxy)
+            if !strings.Contains(p, "://") {
+              p = "socks5://" + p
+            }
+            // Minimal logging
+            log.SetLevel(log.Info)
+
+            // Parse proxy address "socks5://host:port"
+            addr := strings.TrimPrefix(p, "socks5://")
+            if !strings.Contains(addr, ":") {
+              addr = addr + ":1080"
+            }
+
+            // Create SOCKS5 handler
+            h := socks.NewTCPHandler("tcp", addr, "", "", nil)
+            uh := socks.NewUDPHandler("udp", addr, "", "")
+
+            // Create netstack core
+            core.RegisterTCPConnectionHandler(h)
+            core.RegisterUDPConnectionHandler(uh)
+
+            // Start tun2socks with existing TUN FD
+            // MTU defaults to 1500; adjust if needed.
+            err := tun2socks.Start(int(fd), 1500, false)
+            if err != nil {
               return -1
             }
+
+            // Give the stack a brief warm-up
+            time.Sleep(100 * time.Millisecond)
             started = true
             return 0
           }
@@ -112,15 +113,14 @@ jobs:
             if !started {
               return 0
             }
-            ts.Stop()
+            tun2socks.Stop()
             started = false
             return 0
           }
 
           //export tun2socks_info
           func tun2socks_info() *C.char {
-            s := fmt.Sprintf("tun2socks v1.18.3: started=%v", started)
-            return C.CString(s)
+            return C.CString(fmt.Sprintf("go-tun2socks: started=%v", started))
           }
 
           func main() {}
@@ -128,7 +128,6 @@ jobs:
 
           CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
           export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
-
           go build -buildmode=c-shared -o libtun2socks.so
 
           cd ..
@@ -138,7 +137,6 @@ jobs:
       - name: Create Android library with JNI bridge and Gradle project
         run: |
           set -euxo pipefail
-
           mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
 
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
@@ -204,9 +202,7 @@ jobs:
           EOF
 
           cat > tun2socks-android/build.gradle <<'EOF'
-          plugins {
-              id 'com.android.library'
-          }
+          plugins { id 'com.android.library' }
           android {
               namespace "com.example.tun2socks"
               compileSdk 34
