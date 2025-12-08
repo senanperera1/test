@@ -1,23 +1,24 @@
-name: Build tun2socks AAR (arm64, resilient)
+name: Build tun2socks AAR (arm64)
 
 on:
   workflow_dispatch:
-
-env:
-  JAVA_VERSION: '17'
-  ANDROID_COMPILE_SDK: 34
-  ANDROID_BUILD_TOOLS: '34.0.0'
-  ANDROID_NDK_VERSION: '26.3.11579264'
-  GO_VERSION: '1.21.13'
-  TUN2SOCKS_V2: 'v2.6.0'
-  TUN2SOCKS_V1: 'v1.18.3'
 
 jobs:
   build-aar:
     runs-on: ubuntu-latest
 
+    env:
+      JAVA_VERSION: '17'
+      GO_VERSION: '1.21.13'
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_API: '34'
+      ANDROID_BUILD_TOOLS: '34.0.0'
+      ANDROID_NDK_VERSION: '26.3.11579264'
+      TUN2SOCKS_V2: 'v2.6.0'
+      TUN2SOCKS_V1: 'v1.18.3'
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Java
@@ -26,32 +27,41 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Set up Android SDK and NDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: ${{ env.ANDROID_COMPILE_SDK }}
-          components: "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
-          ndk-version: ${{ env.ANDROID_NDK_VERSION }}
-
-      - name: Expose NDK_DIR
-        run: |
-          set -euxo pipefail
-          if [ -d "${ANDROID_SDK_ROOT}/ndk" ]; then
-            NDK_DIR="$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | head -n1)"
-          else
-            NDK_DIR="${ANDROID_SDK_ROOT}/ndk-bundle"
-          fi
-          echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
-          echo "Using NDK at ${NDK_DIR}"
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Install Android SDK, build-tools, and NDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "${ANDROID_SDK_ROOT}"
+          yes | sudo ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+
+          # Install cmdline-tools if missing
+          if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
+            mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+            wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
+            unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+            sudo mv /tmp/cmdtools/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+            sudo chown -R $USER:$USER "${ANDROID_SDK_ROOT}"
+          fi
+
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+
+          yes | sdkmanager --licenses
+
+          sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;${ANDROID_BUILD_TOOLS}" "ndk;${ANDROID_NDK_VERSION}"
+
+          # Expose NDK path
+          NDK_DIR="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
+          echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
+          echo "Using NDK at ${NDK_DIR}"
+
       - name: Build libtun2socks.so (arm64) with v2→v1 fallback
-        env:
-          NDK_DIR: ${{ env.NDK_DIR }}
+        shell: bash
         run: |
           set -euxo pipefail
 
@@ -61,6 +71,7 @@ jobs:
 
           go mod init example.com/tun2socks-wrapper
 
+          # Write v2 wrapper (attempt modern API)
           cat > main_v2.go <<'EOF'
 package main
 /*
@@ -95,7 +106,6 @@ func buildConfig(fd int, proxy string) string {
 func tun2socks_start(fd C.int, proxy *C.char) C.int {
   if started { return 0 }
   cfg := buildConfig(int(fd), C.GoString(proxy))
-  // Some v2 releases expose InsertJSON; compile-time check will determine success
   ts.InsertJSON(cfg)
   ts.Start()
   started = true
@@ -118,6 +128,7 @@ func tun2socks_info() *C.char {
 func main() {}
 EOF
 
+          # Write v1 wrapper (stable API)
           cat > main_v1.go <<'EOF'
 package main
 /*
@@ -175,40 +186,45 @@ func tun2socks_info() *C.char {
 func main() {}
 EOF
 
-          echo "Attempting build against xjasonlyu/tun2socks v2 (${TUN2SOCKS_V2})..."
+          echo "Attempting v2 build ${TUN2SOCKS_V2}..."
           set +e
-          go get github.com/xjasonlyu/tun2socks/v2@${TUN2SOCKS_V2} >/tmp/go_get_v2.log 2>&1 || true
+          go get "github.com/xjasonlyu/tun2socks/v2@${TUN2SOCKS_V2}" >/tmp/go_get_v2.log 2>&1 || true
           go mod tidy >/tmp/go_mod_tidy_v2.log 2>&1 || true
 
           mv main_v2.go main.go
 
-          CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
+          if [ -z "${NDK_DIR:-}" ]; then
+            echo "NDK_DIR not set" >&2
+            exit 1
+          fi
+
+          CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
           export CC
           export CGO_ENABLED=1
           export GOOS=android
           export GOARCH=arm64
 
           if go build -buildmode=c-shared -o libtun2socks.so >/tmp/build_v2.log 2>&1; then
-            echo "Built libtun2socks.so using v2 API"
+            echo "Built v2"
             set -e
           else
-            echo "v2 build failed; falling back to v1. See /tmp/build_v2.log"
+            echo "v2 build failed; falling back to v1"
             cat /tmp/build_v2.log || true
 
             rm -f libtun2socks.so main.go || true
             rm -f go.mod go.sum || true
             go mod init example.com/tun2socks-wrapper
 
-            echo "Fetching v1 module ${TUN2SOCKS_V1}..."
-            go get github.com/xjasonlyu/tun2socks@${TUN2SOCKS_V1} >/tmp/go_get_v1.log 2>&1 || true
+            echo "Fetching v1 ${TUN2SOCKS_V1}..."
+            go get "github.com/xjasonlyu/tun2socks@${TUN2SOCKS_V1}" >/tmp/go_get_v1.log 2>&1 || true
             go mod tidy >/tmp/go_mod_tidy_v1.log 2>&1 || true
 
             mv main_v1.go main.go
             if go build -buildmode=c-shared -o libtun2socks.so >/tmp/build_v1.log 2>&1; then
-              echo "Built libtun2socks.so using v1 API"
+              echo "Built v1"
               set -e
             else
-              echo "v1 build also failed; dumping logs"
+              echo "v1 build failed"
               cat /tmp/build_v1.log || true
               exit 1
             fi
@@ -219,10 +235,13 @@ EOF
           mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
           cp core/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
-      - name: Create Android library with JNI bridge and Gradle project
+      - name: Create Android library project
+        shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
+
+          mkdir -p tun2socks-android/src/main/java/com/example/tun2socks
+          mkdir -p tun2socks-android/src/main/cpp
 
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
 package com.example.tun2socks;
@@ -316,12 +335,14 @@ allprojects { repositories { google(); mavenCentral() } }
 EOF
 
       - name: Initialize Gradle wrapper
+        shell: bash
         run: |
           set -euxo pipefail
           cd tun2socks-android
           gradle wrapper --gradle-version 8.4
 
-      - name: Build AAR (release)
+      - name: Build AAR
+        shell: bash
         run: |
           set -euxo pipefail
           cd tun2socks-android
