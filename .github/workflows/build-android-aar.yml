@@ -51,30 +51,24 @@ jobs:
 
           import (
               "os"
-              "fmt"
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
               _ "golang.org/x/mobile/bind" // This blank import forces Go to keep the 'bind' package.
           )
 
           // This is a blocking call that runs the tun2socks loop.
-          func Start(fd int, proxyAddr string, proxyPort int) error {
+          func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
               
-              // FIX: The correct function name is NewHandler, and it returns an error.
-              proxy, err := socks.NewHandler(proxyAddr, uint16(proxyPort))
-              if err != nil {
-                  return fmt.Errorf("failed to create socks handler: %w", err)
-              }
+              // FIX: The correct function name is NewSocks5Handler.
+              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
 
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
               core.RegisterOutputFn(func(data []byte) (int, error) {
                   return f.Write(data)
               })
-
               core.Start()
-              return nil
           }
 
           // Stop the tun2socks core loop
