@@ -37,9 +37,7 @@ jobs:
           go-version: '1.22'
 
       - name: Clone tun2socks
-        run: |
-          git clone https://github.com/xjasonlyu/tun2socks.git
-          echo "Cloned xjasonlyu/tun2socks"
+        run: git clone https://github.com/xjasonlyu/tun2socks.git
 
       - name: Build libtun2socks.so (arm64-v8a)
         env:
@@ -48,21 +46,13 @@ jobs:
         run: |
           set -e
           cd tun2socks
-
-          # Use NDK Clang for aarch64 targeting API 21
           export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
           export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang++"
-
-          # Enable cgo and target Android arm64
           export CGO_ENABLED=1
           export GOOS=android
           export GOARCH=arm64
-
-          # Build shared library from cmd/tun2socks
           mkdir -p ../out/jniLibs/arm64-v8a
-          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/arm64-v8a/libtun2socks.so ./cmd/tun2socks
-
-          # Provide a minimal header (produced by c-shared mode)
+          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/arm64-v8a/libtun2socks.so .
           ls -lah ../out/jniLibs/arm64-v8a
 
       - name: Build libtun2socks.so (armeabi-v7a)
@@ -72,24 +62,18 @@ jobs:
         run: |
           set -e
           cd tun2socks
-
-          # Use NDK Clang for armv7 targeting API 21
           export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang"
           export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang++"
-
           export CGO_ENABLED=1
           export GOOS=android
           export GOARCH=arm
-
           mkdir -p ../out/jniLibs/armeabi-v7a
-          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/armeabi-v7a/libtun2socks.so ./cmd/tun2socks
+          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/armeabi-v7a/libtun2socks.so .
           ls -lah ../out/jniLibs/armeabi-v7a
 
       - name: Package jniLibs layout
         run: |
-          set -e
           cd out
-          # Create a zip with the exact jniLibs structure for easy drop-in
           zip -r tun2socks-jniLibs.zip jniLibs
           ls -lah
 
