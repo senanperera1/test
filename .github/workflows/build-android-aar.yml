@@ -32,6 +32,7 @@ jobs:
 
       - name: Install NDK
         run: |
+          set -euxo pipefail
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "${ANDROID_NDK_PACKAGE}"
           NDK_DIR="$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | head -n1)"
           echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
@@ -41,41 +42,63 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build libtun2socks.so (arm64)
+      - name: Build libtun2socks.so (arm64) against v1.18.3
         run: |
+          set -euxo pipefail
+
           mkdir -p core && cd core
           go mod init example.com/tun2socks-wrapper
-          go get github.com/xjasonlyu/tun2socks@${TUN2SOCKS_VERSION}
+
+          # Fetch the v1 engine subpackage explicitly to satisfy the import
+          go get github.com/xjasonlyu/tun2socks/engine@${TUN2SOCKS_VERSION}
 
           cat > main.go <<'EOF'
           package main
+
           /*
           #include <stdlib.h>
           */
           import "C"
+
           import (
             "encoding/json"
             "fmt"
             "strings"
+
             ts "github.com/xjasonlyu/tun2socks/engine"
           )
+
           var started bool
+
           func buildConfig(fd int, proxy string) string {
             p := proxy
             if !strings.Contains(p, "://") {
               p = "socks5://" + p
             }
             cfg := map[string]any{
-              "device":   map[string]any{"fdbased": map[string]any{"fd": fd}},
-              "proxy":    map[string]any{"socks5": map[string]any{"addr": p}},
-              "netstack": map[string]any{"enable": true},
+              "device": map[string]any{
+                "fdbased": map[string]any{
+                  "fd": fd,
+                },
+              },
+              "proxy": map[string]any{
+                "socks5": map[string]any{
+                  "addr": p,
+                },
+              },
+              "netstack": map[string]any{
+                "enable": true,
+              },
             }
             b, _ := json.Marshal(cfg)
             return string(b)
           }
+
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
-            if started { return 0 }
+            if started {
+              return 0
+            }
             cfg := buildConfig(int(fd), C.GoString(proxy))
             if err := ts.Start(cfg); err != nil {
               return -1
@@ -83,50 +106,66 @@ jobs:
             started = true
             return 0
           }
+
           //export tun2socks_stop
           func tun2socks_stop() C.int {
-            if !started { return 0 }
+            if !started {
+              return 0
+            }
             ts.Stop()
             started = false
             return 0
           }
+
           //export tun2socks_info
           func tun2socks_info() *C.char {
-            return C.CString(fmt.Sprintf("tun2socks v1.18.3: started=%v", started))
+            s := fmt.Sprintf("tun2socks v1.18.3: started=%v", started)
+            return C.CString(s)
           }
+
           func main() {}
           EOF
 
           CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
           export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
+
           go build -buildmode=c-shared -o libtun2socks.so
 
           cd ..
           mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
           cp core/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
-      - name: Create Android library with JNI bridge
+      - name: Create Android library with JNI bridge and Gradle project
         run: |
+          set -euxo pipefail
+
           mkdir -p tun2socks-android/src/main/{cpp,java/com/example/tun2socks}
+
           cat > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java <<'EOF'
           package com.example.tun2socks;
+
           public class Tun2Socks {
               static {
                   System.loadLibrary("tun2socks_jni");
                   System.loadLibrary("tun2socks");
               }
+
               public static native int start(int tunFd, String proxyUrl);
               public static native int stop();
               public static native String coreInfo();
           }
           EOF
+
           cat > tun2socks-android/src/main/cpp/tun2socks_jni.c <<'EOF'
           #include <jni.h>
           #include <dlfcn.h>
+
           typedef int (*start_fn)(int fd, const char *url);
           typedef int (*stop_fn)();
           typedef const char* (*info_fn)();
+
           static void *handle; static start_fn core_start; static stop_fn core_stop; static info_fn core_info;
+
           static void ensure_loaded() {
               if (handle) return;
               handle = dlopen("libtun2socks.so", RTLD_NOW);
@@ -134,6 +173,7 @@ jobs:
               core_stop  = (stop_fn)dlsym(handle, "tun2socks_stop");
               core_info  = (info_fn)dlsym(handle, "tun2socks_info");
           }
+
           JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_start(JNIEnv *env,jclass,jint fd,jstring proxyUrl){
               ensure_loaded(); if(!core_start){return -2;}
               const char *url=(*env)->GetStringUTFChars(env,proxyUrl,0);
@@ -141,16 +181,19 @@ jobs:
               (*env)->ReleaseStringUTFChars(env,proxyUrl,url);
               return rc;
           }
+
           JNIEXPORT jint JNICALL Java_com_example_tun2socks_Tun2Socks_stop(JNIEnv *env,jclass){
               ensure_loaded(); if(!core_stop){return -2;}
               return core_stop();
           }
+
           JNIEXPORT jstring JNICALL Java_com_example_tun2socks_Tun2Socks_coreInfo(JNIEnv *env,jclass){
               ensure_loaded(); if(!core_info) return (*env)->NewStringUTF(env,"info not exported");
               const char *s=core_info();
               return (*env)->NewStringUTF(env,s?s:"null");
           }
           EOF
+
           cat > tun2socks-android/src/main/cpp/Android.mk <<'EOF'
           LOCAL_PATH := $(call my-dir)
           include $(CLEAR_VARS)
@@ -159,8 +202,11 @@ jobs:
           LOCAL_LDLIBS    := -llog -ldl
           include $(BUILD_SHARED_LIBRARY)
           EOF
+
           cat > tun2socks-android/build.gradle <<'EOF'
-          plugins { id 'com.android.library' }
+          plugins {
+              id 'com.android.library'
+          }
           android {
               namespace "com.example.tun2socks"
               compileSdk 34
@@ -178,6 +224,7 @@ jobs:
               externalNativeBuild { ndkBuild { path "src/main/cpp/Android.mk" } }
           }
           EOF
+
           echo "include ':tun2socks-android'" > settings.gradle
           cat > build.gradle <<'EOF'
           buildscript {
