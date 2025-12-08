@@ -52,7 +52,6 @@ jobs:
         
         # Add dependencies
         go get github.com/xjasonlyu/tun2socks/v2@v2.5.2
-        go get golang.org/x/mobile/bind
         
         # Tidy up
         go mod tidy
@@ -67,68 +66,47 @@ jobs:
         import (
             "errors"
             "fmt"
-            "io"
             "os"
-            "sync"
             
+            "github.com/xjasonlyu/tun2socks/v2/core/device"
             "github.com/xjasonlyu/tun2socks/v2/core/device/tun"
             "github.com/xjasonlyu/tun2socks/v2/engine"
-            "github.com/xjasonlyu/tun2socks/v2/log"
+            "github.com/xjasonlyu/tun2socks/v2/proxy"
         )
 
         var (
             engineRunning = false
-            engineMutex   sync.Mutex
             engineKey     *engine.Key
+            tunDevice     device.Device
         )
 
-        // VPNService interface for Android VPN
-        type VPNService interface {
-            // Protect protects the socket from VPN
-            Protect(fd int) bool
-        }
-
-        var vpnService VPNService
-
-        // SetVPNService sets the VPN service for socket protection
-        func SetVPNService(service VPNService) {
-            vpnService = service
-        }
-
         // StartEngine starts the tun2socks engine
-        // tunFd: file descriptor of TUN device
-        // mtu: MTU size (usually 1500)
-        // socks5Server: SOCKS5 proxy address (e.g., "127.0.0.1:10808")
-        // fakeDNS: fake DNS server address (e.g., "198.18.0.0/15")
-        // dnsServer: real DNS server (e.g., "8.8.8.8:53")
-        func StartEngine(tunFd int, mtu int, socks5Server string, fakeDNS string, dnsServer string) error {
-            engineMutex.Lock()
-            defer engineMutex.Unlock()
-
+        // tunFd: file descriptor of TUN device from VpnService
+        // mtu: MTU size (typically 1500)
+        // proxyServer: SOCKS5 proxy address (e.g., "127.0.0.1:10808")
+        func StartEngine(tunFd int64, mtu int64, proxyServer string) error {
             if engineRunning {
                 return errors.New("engine already running")
             }
 
             // Create TUN device from file descriptor
-            tunDevice, err := tun.Open(tunFd, mtu)
+            var err error
+            tunDevice, err = tun.Open(int(tunFd), int(mtu))
             if err != nil {
-                return fmt.Errorf("failed to open tun device: %w", err)
+                return fmt.Errorf("failed to open tun device: %v", err)
             }
 
-            // Configure engine
-            key, err := engine.Start(engine.Config{
-                Device: tunDevice,
-                Proxy:  fmt.Sprintf("socks5://%s", socks5Server),
-                UDPTimeout: 60,
-                RestAPI: "",
-                TCPModerateReceiveBuffer: true,
-                TCPSendBufferSize: "",
-                TCPReceiveBufferSize: "",
-                MulticastGroups: "",
-            })
-            
+            // Parse proxy URL
+            proxyURL := fmt.Sprintf("socks5://%s", proxyServer)
+            proxyAdapter, err := proxy.ParseProxy(proxyURL)
             if err != nil {
-                return fmt.Errorf("failed to start engine: %w", err)
+                return fmt.Errorf("failed to parse proxy: %v", err)
+            }
+
+            // Start engine with configuration
+            key := engine.Insert(tunDevice, proxyAdapter)
+            if key == nil {
+                return errors.New("failed to start engine")
             }
 
             engineKey = key
@@ -138,16 +116,18 @@ jobs:
 
         // StopEngine stops the tun2socks engine
         func StopEngine() error {
-            engineMutex.Lock()
-            defer engineMutex.Unlock()
-
             if !engineRunning {
                 return errors.New("engine not running")
             }
 
             if engineKey != nil {
-                engine.Stop(engineKey)
+                engine.Remove(engineKey)
                 engineKey = nil
+            }
+            
+            if tunDevice != nil {
+                tunDevice.Close()
+                tunDevice = nil
             }
             
             engineRunning = false
@@ -156,52 +136,35 @@ jobs:
 
         // IsRunning checks if engine is running
         func IsRunning() bool {
-            engineMutex.Lock()
-            defer engineMutex.Unlock()
             return engineRunning
-        }
-
-        // SetLogLevel sets the log level
-        // level: "debug", "info", "warning", "error", "silent"
-        func SetLogLevel(level string) {
-            switch level {
-            case "debug":
-                log.SetLevel(log.DEBUG)
-            case "info":
-                log.SetLevel(log.INFO)
-            case "warning":
-                log.SetLevel(log.WARNING)
-            case "error":
-                log.SetLevel(log.ERROR)
-            case "silent":
-                log.SetLevel(log.SILENT)
-            default:
-                log.SetLevel(log.INFO)
-            }
-        }
-
-        // SetLogOutput sets the log output
-        func SetLogOutput(writer io.Writer) {
-            if writer == nil {
-                log.SetOutput(os.Stdout)
-            } else {
-                log.SetOutput(writer)
-            }
         }
 
         // GetVersion returns the version
         func GetVersion() string {
-            return "tun2socks-v2.5.2"
+            return "tun2socks-v2.5.2-wrapper"
         }
 
-        // Simple start for basic usage
-        func Start(tunFd int, proxyAddress string) error {
-            return StartEngine(tunFd, 1500, proxyAddress, "", "8.8.8.8:53")
+        // Start is a simplified version of StartEngine with default MTU
+        func Start(tunFd int64, proxyServer string) error {
+            return StartEngine(tunFd, 1500, proxyServer)
         }
 
-        // Stop is alias for StopEngine
+        // Stop is an alias for StopEngine
         func Stop() error {
             return StopEngine()
+        }
+
+        // SetLogOutput sets where logs should go (not implemented, for compatibility)
+        func SetLogOutput(path string) {
+            // Mobile binding limitation - just ignore
+            if path != "" {
+                os.Setenv("LOG_PATH", path)
+            }
+        }
+
+        // SetLogLevel sets the log level
+        func SetLogLevel(level string) {
+            os.Setenv("LOG_LEVEL", level)
         }
         EOF
     
