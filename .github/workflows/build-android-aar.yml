@@ -11,7 +11,7 @@ jobs:
       ANDROID_COMPILE_SDK: 34
       ANDROID_BUILD_TOOLS: 34.0.0
       ANDROID_NDK_PACKAGE: ndk;27.0.12077973
-      GO_VERSION: '1.22.6'
+      GO_VERSION: '1.24.11'
 
     steps:
       - name: Checkout repository
@@ -33,7 +33,6 @@ jobs:
         run: |
           set -euxo pipefail
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "${ANDROID_NDK_PACKAGE}"
-          ls -1 "${ANDROID_SDK_ROOT}/ndk" || true
           NDK_DIR="$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | head -n1)"
           echo "NDK_DIR=${NDK_DIR}" >> $GITHUB_ENV
 
@@ -56,43 +55,31 @@ jobs:
           */
           import "C"
           import (
-            "encoding/json"
             "fmt"
-            "strings"
-            ts "github.com/xjasonlyu/tun2socks/v2/engine"
+            "github.com/xjasonlyu/tun2socks/v2/core"
           )
-          var started bool
-          func buildConfig(fd int, proxy string) string {
-            p := proxy
-            if !strings.Contains(p, "://") {
-              p = "socks5://" + p
-            }
-            cfg := map[string]any{
-              "device": map[string]any{"fdbased": map[string]any{"fd": fd}},
-              "proxy":  map[string]any{"socks5": map[string]any{"addr": p}},
-              "netstack": map[string]any{"enable": true},
-            }
-            b, _ := json.Marshal(cfg)
-            return string(b)
-          }
+          var stack core.Stack
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
-            if started { return 0 }
-            cfg := buildConfig(int(fd), C.GoString(proxy))
-            if err := ts.Start(cfg); err != nil { return -1 }
-            started = true
+            if stack != nil { return 0 }
+            s, err := core.CreateStack(
+              core.WithTunFd(int(fd)),
+              core.WithSocksProxy(C.GoString(proxy)),
+            )
+            if err != nil { return -1 }
+            stack = s
             return 0
           }
           //export tun2socks_stop
           func tun2socks_stop() C.int {
-            if !started { return 0 }
-            if err := ts.Stop(); err != nil { return -1 }
-            started = false
+            if stack == nil { return 0 }
+            stack.Close()
+            stack = nil
             return 0
           }
           //export tun2socks_info
           func tun2socks_info() *C.char {
-            return C.CString(fmt.Sprintf("tun2socks wrapper: started=%v", started))
+            return C.CString(fmt.Sprintf("tun2socks stack active=%v", stack != nil))
           }
           func main() {}
           EOF
@@ -207,3 +194,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-aar-arm64
+          path: tun2socks-android/build/outputs/aar/*.aar
