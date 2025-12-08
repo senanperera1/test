@@ -1,4 +1,4 @@
-name: Build Tun2Socks AAR (Local Clone)
+name: Build Tun2Socks AAR (Local Clone Fixed)
 
 on:
   workflow_dispatch:
@@ -50,6 +50,7 @@ jobs:
           go mod edit -replace github.com/eycorsican/go-tun2socks=../library_src
           
           # 4. Create the Go wrapper file
+          # Note: Added _ "golang.org/x/mobile/bind" to force inclusion
           cat <<'EOF' > tun2socks.go
           package tun2socks
 
@@ -57,16 +58,22 @@ jobs:
               "os"
               "github.com/eycorsican/go-tun2socks/core"
               "github.com/eycorsican/go-tun2socks/proxy/socks"
+              
+              // CRITICAL: Import bind to prevent go mod tidy from removing it
+              _ "golang.org/x/mobile/bind"
           )
 
           // Start the tun2socks core loop. 
-          // fd: File descriptor
-          // proxyAddr: IP of the SOCKS proxy (e.g., "127.0.0.1")
-          // proxyPort: Port of the SOCKS proxy (e.g., 10808)
           func Start(fd int, proxyAddr string, proxyPort int) {
               f := os.NewFile(uintptr(fd), "tun")
 
-              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
+              // Use 127.0.0.1 if empty
+              host := proxyAddr
+              if host == "" {
+                  host = "127.0.0.1"
+              }
+
+              proxy := socks.NewSocks5Handler(host, uint16(proxyPort))
 
               core.RegisterTCPConnHandler(proxy)
               core.RegisterUDPConnHandler(proxy)
@@ -83,6 +90,7 @@ jobs:
           EOF
           
           # 5. Resolve dependencies
+          go get golang.org/x/mobile/bind
           go get github.com/eycorsican/go-tun2socks
           go mod tidy
 
