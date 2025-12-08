@@ -8,8 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
+        uses: actions/setup-java@v4with:
           distribution: 'temurin'
           java-version: '17'
 
@@ -42,7 +41,7 @@ jobs:
           go get github.com/xtls/xray-core@v1.8.4
           go get golang.org/x/mobile/bind@latest
           
-          # Create the Go source file with all the correct imports for native TUN
+          # Create the Go source file with all the correct imports
           cat <<EOF > libv2ray.go
           package libv2ray
 
@@ -89,8 +88,7 @@ jobs:
                   return fmt.Errorf("failed to start server: %v", err)
               }
               v.running = true
-              // This is a blocking call, so we don't return until it's stopped.
-              // This keeps the goroutine alive.
+              // This is a blocking call that keeps the goroutine alive.
               <-v.instance.Done()
               v.running = false
               return nil
@@ -107,7 +105,7 @@ jobs:
               return v.running
           }
 EOF
-
+          
           go mod tidy
 
       - name: Build Custom AAR
