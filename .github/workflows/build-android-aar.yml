@@ -9,7 +9,8 @@ jobs:
 
     steps:
       - name: Setup Java
-        uses: actions/setup-java@v4        with:
+        uses: actions/setup-java@v4
+        with:
           distribution: 'temurin'
           java-version: '17'
 
