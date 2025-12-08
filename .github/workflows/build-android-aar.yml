@@ -1,4 +1,4 @@
-name: Build tun2socks AAR
+name: Build tun2socks AAR from uploaded .so
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -17,80 +17,64 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Install Android SDK + NDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           api-level: 34
-          ndk: 26.1.10909125
-          cmake: 3.22.1
           components: build-tools;34.0.0
 
-      - name: Install gomobile
+      - name: Prepare Android Library module
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
-          gomobile init
+          mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
+          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
-      - name: Create wrapper and build AAR
-        run: |
-          set -e
-          mkdir -p workspace/wrapper
-          cd workspace
-
-          # Clone tun2socks source
-          git clone https://github.com/xjasonlyu/tun2socks.git library_src
-
-          # Create wrapper module
-          cd wrapper
-          go mod init github.com/myuser/tun2socks
-          go mod edit -replace=github.com/xjasonlyu/tun2socks=../library_src
-
-          # Inline wrapper Go code
-          cat <<'EOF' > tun2socks.go
-          package tun2socks
-
-          import (
-              "log"
-              _ "golang.org/x/mobile/bind"
-              "github.com/xjasonlyu/tun2socks/core"
-              "github.com/xjasonlyu/tun2socks/proxy"
-          )
-
-          // Minimal wrapper: you can extend this with tun device handling if needed.
-          func Start(proxyURL string) {
-              handler, err := proxy.New(proxyURL)
-              if err != nil {
-                  log.Println("proxy init error:", err)
-                  return
-              }
-              lwip := core.NewLWIPStack()
-              core.RegisterTCPConnHandler(handler)
-              core.RegisterUDPConnHandler(handler)
-              log.Println("tun2socks core initialized")
-              go lwip.Start()
+          cat <<'EOF' > tun2socks-android/build.gradle
+          plugins {
+              id 'com.android.library'
           }
 
-          func Stop() {
-              log.Println("tun2socks stopping")
+          android {
+              namespace "com.example.tun2socks"
+              compileSdk 34
+
+              defaultConfig {
+                  minSdk 21
+                  targetSdk 34
+              }
+
+              sourceSets {
+                  main {
+                      jniLibs.srcDirs = ['src/main/jniLibs']
+                  }
+              }
           }
           EOF
 
-          go get golang.org/x/mobile/bind
-          go get github.com/xjasonlyu/tun2socks
-          go mod tidy
+          echo "include ':tun2socks-android'" > settings.gradle
 
-          # Build AAR in workspace root
-          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
-          ls -lh ../libtun2socks.aar
+          cat <<'EOF' > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
+          }
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+
+      - name: Build AAR
+        run: ./gradlew :tun2socks-android:assembleRelease
 
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: libtun2socks-aar
-          path: workspace/libtun2socks.aar
+          name: tun2socks-aar
+          path: tun2socks-android/build/outputs/aar/*.aar
