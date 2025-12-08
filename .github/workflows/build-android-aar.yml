@@ -53,30 +53,22 @@ jobs:
           */
           import "C"
           import (
-            "encoding/json"
             "fmt"
             "strings"
             ts "github.com/xjasonlyu/tun2socks/v2/engine"
           )
           var started bool
-          func buildConfig(fd int, proxy string) string {
-            p := proxy
-            if !strings.Contains(p, "://") {
-              p = "socks5://" + p
-            }
-            cfg := map[string]any{
-              "device": map[string]any{"fdbased": map[string]any{"fd": fd}},
-              "proxy":  map[string]any{"socks5": map[string]any{"addr": p}},
-              "netstack": map[string]any{"enable": true},
-            }
-            b, _ := json.Marshal(cfg)
-            return string(b)
-          }
           //export tun2socks_start
           func tun2socks_start(fd C.int, proxy *C.char) C.int {
             if started { return 0 }
-            cfg := buildConfig(int(fd), C.GoString(proxy))
-            ts.Insert(cfg)   // Insert accepts JSON string in v2.6.0
+            p := C.GoString(proxy)
+            if !strings.Contains(p, "://") {
+              p = "socks5://" + p
+            }
+            // Build Key objects for device, proxy, netstack
+            ts.Insert(&ts.Key{Section: "device", Data: fmt.Sprintf(`{"fdbased":{"fd":%d}}`, int(fd))})
+            ts.Insert(&ts.Key{Section: "proxy", Data: fmt.Sprintf(`{"socks5":{"addr":"%s"}}`, p)})
+            ts.Insert(&ts.Key{Section: "netstack", Data: `{"enable":true}`})
             ts.Start()
             started = true
             return 0
@@ -120,7 +112,6 @@ jobs:
           EOF
           cat > tun2socks-android/src/main/cpp/tun2socks_jni.c <<'EOF'
           #include <jni.h>
-          #include <android/log.h>
           #include <dlfcn.h>
           typedef int (*start_fn)(int fd, const char *url);
           typedef int (*stop_fn)();
