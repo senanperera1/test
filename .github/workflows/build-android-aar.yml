@@ -1,65 +1,94 @@
-name: Build Tun2Socks AAR
+name: Build SagerNet Tun2Socks AAR (Final)
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
   build-aar:
     runs-on: ubuntu-latest
-
     steps:
-      # Checkout your repo
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Set up JDK for Gradle
-      - name: Set up JDK 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # Set up Android SDK + NDK
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 34
-          ndk: 26.1.10909125
-          cmake: 3.22.1
-          components: build-tools;34.0.0
-
-      # Set up Go
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: "1.22"
 
-      # Install gomobile + gobind
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
           gomobile init
 
-      # Clone tun2socks
-      - name: Clone tun2socks
-        run: git clone https://github.com/xjasonlyu/tun2socks.git
-
-      # Build tun2socks AAR
-      - name: Build tun2socks AAR
+      - name: Install Android SDK + NDK
         run: |
-          cd tun2socks
-          gomobile bind -target=android ./cmd/tun2socks
-          mkdir -p ../app/libs
-          cp tun2socks.aar ../app/libs/tun2socks.aar
+          mkdir -p $HOME/android-sdk
+          export ANDROID_HOME=$HOME/android-sdk
+          curl -o ndk.zip https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q ndk.zip -d $HOME/android-sdk/
+          echo "ANDROID_NDK_HOME=$HOME/android-sdk/android-ndk-r25c" >> $GITHUB_ENV
 
-      # Upload artifact
+      - name: Create Tun2Socks Wrapper
+        run: |
+          mkdir tun2socks
+          cd tun2socks
+          go mod init github.com/myuser/tun2socks
+          
+          # This 'replace' directive is the fix for the SagerNet module path mismatch.
+          go mod edit -replace=github.com/eycorsican/go-tun2socks=github.com/SagerNet/go-tun2socks@latest
+          
+          # Get the necessary dependencies.
+          go get github.com/eycorsican/go-tun2socks
+          go get golang.org/x/mobile/bind
+          
+          # Create the Go wrapper file with the corrected API and bind import.
+          cat <<'EOF' > tun2socks.go
+          package tun2socks
+
+          import (
+              "os"
+              "github.com/eycorsican/go-tun2socks/core"
+              "github.com/eycorsican/go-tun2socks/proxy/socks"
+              
+              // This blank import forces Go to keep the 'bind' package.
+              _ "golang.org/x/mobile/bind"
+          )
+
+          // This is a blocking call that runs the tun2socks loop.
+          func Start(fd int, proxyAddr string, proxyPort int) {
+              f := os.NewFile(uintptr(fd), "tun")
+              
+              // The SagerNet fork uses NewSocks5Handler
+              proxy := socks.NewSocks5Handler(proxyAddr, uint16(proxyPort))
+
+              core.RegisterTCPConnHandler(proxy)
+              core.RegisterUDPConnHandler(proxy)
+              core.RegisterOutputFn(func(data []byte) (int, error) {
+                  return f.Write(data)
+              })
+              core.Start()
+          }
+
+          // Stop the tun2socks core loop
+          func Stop() {
+              core.Stop()
+          }
+          EOF
+          
+          go mod tidy
+
+      - name: Build Tun2Socks AAR
+        working-directory: tun2socks
+        run: |
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
+          ls -lh ../libtun2socks.aar
+
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-aar
-          path: app/libs/tun2socks.aar
+          name: libtun2socks-aar
+          path: "libtun2socks.aar"
