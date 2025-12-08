@@ -2,38 +2,349 @@ name: Build tun2socks AAR
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
-  build-aar:
+  build:
     runs-on: ubuntu-latest
-
-    env:
-      JAVA_VERSION: '17'
-      GO_VERSION: '1.21.13'
-      ANDROID_API: '34'
-      ANDROID_BUILD_TOOLS: '34.0.0'
-      ANDROID_NDK_VERSION: '26.1.10909125'
-
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+    
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '17'
+    
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+    
+    - name: Install NDK
+      run: |
+        sdkmanager --install "ndk;25.2.9519653"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+    
+    - name: Install gomobile
+      run: |
+        go install golang.org/x/mobile/cmd/gomobile@latest
+        go install golang.org/x/mobile/cmd/gobind@latest
+        echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+    
+    - name: Initialize gomobile
+      run: gomobile init
+    
+    - name: Create wrapper project structure
+      run: |
+        mkdir -p tun2socks-wrapper
+        cd tun2socks-wrapper
+        
+        # Create go.mod
+        cat > go.mod << 'EOF'
+        module github.com/tun2socks/wrapper
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+        go 1.21
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
+        require (
+            github.com/xjasonlyu/tun2socks/v2 v2.5.2
+            golang.org/x/mobile v0.0.0-20231127183840-76ac6878050a
+        )
+        EOF
+        
+        go mod download
+    
+    - name: Create wrapper Go code
+      run: |
+        cd tun2socks-wrapper
+        
+        cat > wrapper.go << 'EOF'
+        package tun2socks
 
-      - name: Build AAR
-        run: bash build-aar.sh
+        import (
+            "errors"
+            "fmt"
+            "io"
+            "os"
+            "sync"
+            
+            "github.com/xjasonlyu/tun2socks/v2/core/device/tun"
+            "github.com/xjasonlyu/tun2socks/v2/engine"
+            "github.com/xjasonlyu/tun2socks/v2/log"
+        )
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tun2socks-aar-arm64
-          path: tun2socks-android/build/outputs/aar/*.aar
+        var (
+            engineRunning = false
+            engineMutex   sync.Mutex
+            engineKey     *engine.Key
+        )
+
+        // VPNService interface for Android VPN
+        type VPNService interface {
+            // Protect protects the socket from VPN
+            Protect(fd int) bool
+        }
+
+        var vpnService VPNService
+
+        // SetVPNService sets the VPN service for socket protection
+        func SetVPNService(service VPNService) {
+            vpnService = service
+        }
+
+        // StartEngine starts the tun2socks engine
+        // tunFd: file descriptor of TUN device
+        // mtu: MTU size (usually 1500)
+        // socks5Server: SOCKS5 proxy address (e.g., "127.0.0.1:10808")
+        // fakeDNS: fake DNS server address (e.g., "198.18.0.0/15")
+        // dnsServer: real DNS server (e.g., "8.8.8.8:53")
+        func StartEngine(tunFd int, mtu int, socks5Server string, fakeDNS string, dnsServer string) error {
+            engineMutex.Lock()
+            defer engineMutex.Unlock()
+
+            if engineRunning {
+                return errors.New("engine already running")
+            }
+
+            // Create TUN device from file descriptor
+            tunDevice, err := tun.Open(tunFd, mtu)
+            if err != nil {
+                return fmt.Errorf("failed to open tun device: %w", err)
+            }
+
+            // Configure engine
+            key, err := engine.Start(engine.Config{
+                Device: tunDevice,
+                Proxy:  fmt.Sprintf("socks5://%s", socks5Server),
+                UDPTimeout: 60,
+                RestAPI: "",
+                TCPModerateReceiveBuffer: true,
+                TCPSendBufferSize: "",
+                TCPReceiveBufferSize: "",
+                MulticastGroups: "",
+            })
+            
+            if err != nil {
+                return fmt.Errorf("failed to start engine: %w", err)
+            }
+
+            engineKey = key
+            engineRunning = true
+            return nil
+        }
+
+        // StopEngine stops the tun2socks engine
+        func StopEngine() error {
+            engineMutex.Lock()
+            defer engineMutex.Unlock()
+
+            if !engineRunning {
+                return errors.New("engine not running")
+            }
+
+            if engineKey != nil {
+                engine.Stop(engineKey)
+                engineKey = nil
+            }
+            
+            engineRunning = false
+            return nil
+        }
+
+        // IsRunning checks if engine is running
+        func IsRunning() bool {
+            engineMutex.Lock()
+            defer engineMutex.Unlock()
+            return engineRunning
+        }
+
+        // SetLogLevel sets the log level
+        // level: "debug", "info", "warning", "error", "silent"
+        func SetLogLevel(level string) {
+            switch level {
+            case "debug":
+                log.SetLevel(log.DEBUG)
+            case "info":
+                log.SetLevel(log.INFO)
+            case "warning":
+                log.SetLevel(log.WARNING)
+            case "error":
+                log.SetLevel(log.ERROR)
+            case "silent":
+                log.SetLevel(log.SILENT)
+            default:
+                log.SetLevel(log.INFO)
+            }
+        }
+
+        // SetLogOutput sets the log output
+        func SetLogOutput(writer io.Writer) {
+            if writer == nil {
+                log.SetOutput(os.Stdout)
+            } else {
+                log.SetOutput(writer)
+            }
+        }
+
+        // GetVersion returns the version
+        func GetVersion() string {
+            return "tun2socks-v2.5.2"
+        }
+
+        // Simple start for basic usage
+        func Start(tunFd int, proxyAddress string) error {
+            return StartEngine(tunFd, 1500, proxyAddress, "", "8.8.8.8:53")
+        }
+
+        // Stop is alias for StopEngine
+        func Stop() error {
+            return StopEngine()
+        }
+        EOF
+    
+    - name: Build AAR
+      run: |
+        cd tun2socks-wrapper
+        gomobile bind -v -androidapi 21 -target=android -o tun2socks.aar -javapkg=io.github.tun2socks .
+    
+    - name: Create usage documentation
+      run: |
+        cat > USAGE.md << 'EOF'
+        # tun2socks AAR Usage Guide
+
+        ## Integration
+
+        1. Add the AAR to your Android project:
+           - Copy `tun2socks.aar` to `app/libs/`
+           - In `app/build.gradle`:
+           ```gradle
+           dependencies {
+               implementation files('libs/tun2socks.aar')
+           }
+           ```
+
+        ## Basic Usage (Kotlin)
+
+        ```kotlin
+        import io.github.tun2socks.Tun2socks
+
+        // In your VPN service
+        class MyVpnService : VpnService() {
+            
+            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                // Setup VPN interface
+                val builder = Builder()
+                    .setMtu(1500)
+                    .addAddress("10.0.0.2", 24)
+                    .addRoute("0.0.0.0", 0)
+                    .addDnsServer("8.8.8.8")
+                    .setSession("Tun2socks VPN")
+                
+                val vpnInterface = builder.establish() ?: return START_NOT_STICKY
+                val tunFd = vpnInterface.detachFd()
+                
+                // Start tun2socks (simple method)
+                try {
+                    Tun2socks.start(tunFd.toLong(), "127.0.0.1:10808")
+                    Log.i("VPN", "Tun2socks started successfully")
+                } catch (e: Exception) {
+                    Log.e("VPN", "Failed to start tun2socks", e)
+                }
+                
+                return START_STICKY
+            }
+            
+            override fun onDestroy() {
+                try {
+                    Tun2socks.stop()
+                } catch (e: Exception) {
+                    Log.e("VPN", "Failed to stop tun2socks", e)
+                }
+                super.onDestroy()
+            }
+        }
+        ```
+
+        ## Advanced Usage
+
+        ```kotlin
+        // Set log level
+        Tun2socks.setLogLevel("info") // debug, info, warning, error, silent
+
+        // Advanced start with all options
+        Tun2socks.startEngine(
+            tunFd.toLong(),
+            1500, // MTU
+            "127.0.0.1:10808", // SOCKS5 proxy from XrayCore
+            "198.18.0.0/15", // Fake DNS range
+            "8.8.8.8:53" // Real DNS server
+        )
+
+        // Check if running
+        val isRunning = Tun2socks.isRunning()
+
+        // Get version
+        val version = Tun2socks.getVersion()
+        ```
+
+        ## Integration with XrayCore
+
+        1. Start XrayCore first with SOCKS5 inbound on `127.0.0.1:10808`
+        2. Then start tun2socks pointing to that address
+        3. tun2socks will feed all TUN traffic to XrayCore
+
+        ## Example XrayCore Config
+
+        ```json
+        {
+          "inbounds": [{
+            "port": 10808,
+            "protocol": "socks",
+            "settings": {
+              "udp": true
+            }
+          }]
+        }
+        ```
+        EOF
+    
+    - name: Upload AAR artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tun2socks-aar
+        path: |
+          tun2socks-wrapper/tun2socks.aar
+          tun2socks-wrapper/tun2socks-sources.jar
+          USAGE.md
+        retention-days: 30
+    
+    - name: Create Release
+      if: github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v2.5.2-build-${{ github.run_number }}
+        files: |
+          tun2socks-wrapper/tun2socks.aar
+          tun2socks-wrapper/tun2socks-sources.jar
+          USAGE.md
+        body: |
+          ## tun2socks AAR for Android
+          
+          Built from xjasonlyu/tun2socks v2.5.2
+          
+          ### Files:
+          - `tun2socks.aar` - Main library
+          - `tun2socks-sources.jar` - Source code
+          - `USAGE.md` - Integration guide
+          
+          ### Quick Start:
+          ```kotlin
+          Tun2socks.start(tunFd.toLong(), "127.0.0.1:10808")
+          ```
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
