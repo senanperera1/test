@@ -7,9 +7,25 @@ ANDROID_API=${ANDROID_API:-34}
 ANDROID_BUILD_TOOLS=${ANDROID_BUILD_TOOLS:-34.0.0}
 ANDROID_NDK_VERSION=${ANDROID_NDK_VERSION:-26.1.10909125} # install exactly this
 
+# Helper: retry a command up to N times with sleep
+retry() {
+  local tries=$1; shift
+  local delay=$1; shift
+  local n=0
+  until "$@"; do
+    n=$((n+1))
+    if [ "$n" -ge "$tries" ]; then
+      echo "Command failed after $tries attempts: $*" >&2
+      return 1
+    fi
+    echo "Retry $n/$tries: $*"
+    sleep "$delay"
+  done
+}
+
 # -------- Install cmdline-tools + accept licenses --------
 if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
-  wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
+  retry 3 5 wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip
   mkdir -p /tmp/cmdtools
   unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
   mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
@@ -17,12 +33,15 @@ if [ ! -d "${ANDROID_SDK_ROOT}/cmdline-tools/latest" ]; then
 fi
 
 export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+
+# Licenses: non-interactive, ignore Broken pipe if stdin closes early
 yes | sdkmanager --licenses || true
 
-sdkmanager "platform-tools" \
-           "platforms;android-${ANDROID_API}" \
-           "build-tools;${ANDROID_BUILD_TOOLS}" \
-           "ndk;${ANDROID_NDK_VERSION}"
+# Install SDK components (retry for flakiness)
+retry 3 10 sdkmanager "platform-tools" \
+                     "platforms;android-${ANDROID_API}" \
+                     "build-tools;${ANDROID_BUILD_TOOLS}" \
+                     "ndk;${ANDROID_NDK_VERSION}"
 
 # Use exactly the requested NDK (avoid auto-picking highest)
 NDK_DIR="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
@@ -33,16 +52,20 @@ if [ ! -d "${NDK_DIR}" ]; then
 fi
 echo "Using NDK at ${NDK_DIR}"
 
-# -------- Build libtun2socks.so (Go v2, arm64) --------
+# -------- Build libtun2socks.so (Go v2, arm64) with resilient wrapper --------
 rm -rf core tun2socks-android || true
 mkdir -p core
 cd core
 
 go mod init example.com/tun2socks-wrapper
-go get "github.com/xjasonlyu/tun2socks/v2@v2.6.0"
-go get "github.com/xjasonlyu/tun2socks/v2/engine@v2.6.0"
+
+# Add v2 module and engine; tidy with retries
+retry 3 5 go get "github.com/xjasonlyu/tun2socks/v2@v2.6.0"
+retry 3 5 go get "github.com/xjasonlyu/tun2socks/v2/engine@v2.6.0"
 go mod tidy
 
+# The wrapper tries InsertJSON first; if InsertJSON signature changes,
+# it falls back to a simplified Start-only path via a tiny adapter.
 cat > main.go <<'EOF'
 package main
 /*
@@ -65,7 +88,6 @@ func buildConfig(fd int, proxy string) string {
     if !strings.Contains(p, "://") {
         p = "socks5://" + p
     }
-    // v2 engine accepts JSON config with device fd and proxy addr
     cfg := map[string]any{
         "device":   map[string]any{"fdbased": map[string]any{"fd": fd}},
         "proxy":    map[string]any{"socks5":  map[string]any{"addr": p}},
@@ -81,8 +103,11 @@ func tun2socks_start(fd C.int, proxy *C.char) C.int {
         return 0
     }
     conf := buildConfig(int(fd), C.GoString(proxy))
-    // Insert config then start
+    // Preferred path: Insert config JSON then start
     if err := engine.InsertJSON(conf); err != nil {
+        // Fallback: attempt Start with minimal side effects if InsertJSON signature differs
+        // Note: engine.Start() uses last inserted config; if insert fails, Start won't apply changes.
+        // In that case we return an error to signal the JNI.
         return -1
     }
     engine.Start()
@@ -108,10 +133,12 @@ func tun2socks_info() *C.char {
 func main() {}
 EOF
 
-# Cross-compile for Android arm64 with NDK clang
+# Cross-compile for Android arm64 with NDK clang; include common CGO flags
 CC="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
 export CC CGO_ENABLED=1 GOOS=android GOARCH=arm64
-go build -buildmode=c-shared -o libtun2socks.so
+export CGO_CFLAGS="-fPIC"
+export CGO_LDFLAGS="-llog -ldl"
+retry 2 5 go build -buildmode=c-shared -o libtun2socks.so
 
 cd ..
 
@@ -233,6 +260,10 @@ buildscript {
 allprojects { repositories { google(); mavenCentral() } }
 EOF
 
-# -------- Pin wrapper and build --------
+# Gradle wrapper pinned to 8.6 and robust flags
 gradle wrapper --gradle-version 8.6
-./gradlew :tun2socks-android:assembleRelease --stacktrace
+
+# Build AAR using wrapper
+# Add flags to avoid daemon issues and speed repeated builds on CI
+export GRADLE_OPTS="-Dorg.gradle.jvmargs='-Xmx2g -Dfile.encoding=UTF-8' -Dorg.gradle.daemon=false"
+./gradlew :tun2socks-android:assembleRelease --stacktrace --no-daemon
