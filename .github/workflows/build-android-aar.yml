@@ -12,7 +12,8 @@ jobs:
       GO_VERSION: '1.21.13'
       ANDROID_API: '34'
       ANDROID_BUILD_TOOLS: '34.0.0'
-      ANDROID_NDK_VERSION: '26.3.11579264'
+      # Pin an NDK version that sdkmanager actually installs reliably on CI
+      ANDROID_NDK_VERSION: '26.1.10909125'
 
     steps:
       - name: Checkout
@@ -29,7 +30,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run build script
+      - name: Build AAR
         run: bash build-aar.sh
 
       - name: Upload artifact
