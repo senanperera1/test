@@ -27,11 +27,26 @@ jobs:
         run: |
           # Create folder structure
           mkdir -p tun2socks-android/src/main/jniLibs/arm64-v8a
+          mkdir -p tun2socks-android/src/main/java/com/example/tun2socks
 
           # Copy your uploaded .so file into jniLibs
           cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
 
-          # Minimal build.gradle for the library
+          # Minimal Java wrapper class
+          cat <<'EOF' > tun2socks-android/src/main/java/com/example/tun2socks/Tun2Socks.java
+          package com.example.tun2socks;
+
+          public class Tun2Socks {
+              static {
+                  System.loadLibrary("tun2socks");
+              }
+
+              public static native int start(int fd, String proxyUrl);
+              public static native int stop();
+          }
+          EOF
+
+          # Library build.gradle
           cat <<'EOF' > tun2socks-android/build.gradle
           plugins {
               id 'com.android.library'
@@ -48,6 +63,7 @@ jobs:
 
               sourceSets {
                   main {
+                      java.srcDirs = ['src/main/java']
                       jniLibs.srcDirs = ['src/main/jniLibs']
                   }
               }
