@@ -12,7 +12,6 @@ jobs:
       GO_VERSION: '1.21.13'
       ANDROID_API: '34'
       ANDROID_BUILD_TOOLS: '34.0.0'
-      # Pin an NDK version that sdkmanager actually installs reliably on CI
       ANDROID_NDK_VERSION: '26.1.10909125'
 
     steps:
