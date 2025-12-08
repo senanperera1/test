@@ -1,4 +1,4 @@
-name: Build tun2socks AAR with JNI bridge
+name: Build tun2socks AAR with JNI bridge only
 
 on:
   workflow_dispatch:
@@ -30,13 +30,17 @@ jobs:
           mkdir -p tun2socks-android/src/main/java/tun2socks
           mkdir -p tun2socks-android/src/main/cpp
 
+          # Copy your prebuilt libtun2socks.so into jniLibs
+          cp native/libtun2socks.so tun2socks-android/src/main/jniLibs/arm64-v8a/
+
           # Java wrapper class
           cat <<'EOF' > tun2socks-android/src/main/java/tun2socks/Tun2Socks.java
           package tun2socks;
 
           public class Tun2Socks {
               static {
-                  System.loadLibrary("tun2socks");
+                  System.loadLibrary("tun2socks_jni"); // load JNI bridge
+                  System.loadLibrary("tun2socks");     // load prebuilt core
               }
 
               public static native int start(int fd, String proxyUrl);
@@ -47,31 +51,51 @@ jobs:
           # JNI bridge C file
           cat <<'EOF' > tun2socks-android/src/main/cpp/tun2socks_jni.c
           #include <jni.h>
-          #include "tun2socks.h"  // header from your C library
+          #include <dlfcn.h>
+          #include <string.h>
+
+          typedef int (*tun2socks_start_fn)(int fd, const char *url);
+          typedef int (*tun2socks_stop_fn)();
+
+          static tun2socks_start_fn core_start = NULL;
+          static tun2socks_stop_fn core_stop = NULL;
+
+          static void ensure_loaded() {
+              if (core_start == NULL || core_stop == NULL) {
+                  void *handle = dlopen("libtun2socks.so", RTLD_NOW);
+                  if (handle) {
+                      core_start = (tun2socks_start_fn)dlsym(handle, "tun2socks_start");
+                      core_stop  = (tun2socks_stop_fn)dlsym(handle, "tun2socks_stop");
+                  }
+              }
+          }
 
           JNIEXPORT jint JNICALL
           Java_tun2socks_Tun2Socks_start(JNIEnv *env, jclass clazz, jint fd, jstring proxyUrl) {
+              ensure_loaded();
+              if (core_start == NULL) return -1;
               const char *url = (*env)->GetStringUTFChars(env, proxyUrl, 0);
-              int result = tun2socks_start(fd, url);
+              int result = core_start(fd, url);
               (*env)->ReleaseStringUTFChars(env, proxyUrl, url);
               return result;
           }
 
           JNIEXPORT jint JNICALL
           Java_tun2socks_Tun2Socks_stop(JNIEnv *env, jclass clazz) {
-              return tun2socks_stop();
+              ensure_loaded();
+              if (core_stop == NULL) return -1;
+              return core_stop();
           }
           EOF
 
-          # Android.mk for JNI bridge + core sources
+          # Android.mk for JNI bridge only
           cat <<'EOF' > tun2socks-android/src/main/cpp/Android.mk
           LOCAL_PATH := $(call my-dir)
 
           include $(CLEAR_VARS)
-          LOCAL_MODULE    := tun2socks
-          LOCAL_SRC_FILES := tun2socks_jni.c \
-                             ../path/to/tun2socks_core.c
-          LOCAL_LDLIBS    := -llog
+          LOCAL_MODULE    := tun2socks_jni
+          LOCAL_SRC_FILES := tun2socks_jni.c
+          LOCAL_LDLIBS    := -llog -ldl
           include $(BUILD_SHARED_LIBRARY)
           EOF
 
