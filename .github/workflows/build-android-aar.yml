@@ -1,77 +1,100 @@
-name: Build tun2socks .so (arm64-v8a)
+name: Build Final tun2socks AAR
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
-  build-so:
+  build-aar:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 34
-          components: build-tools;34.0.0
-
-      - name: Install NDK r26c with sdkmanager
-        run: |
-          yes | sdkmanager --licenses
-          sdkmanager "ndk;26.1.10909125"
-          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "NDK_LLVM_BIN=$ANDROID_SDK_ROOT/ndk/26.1.10909125/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
-          ls -la "$ANDROID_SDK_ROOT/ndk/26.1.10909125/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
-      - name: Set up Go 1.25
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.22'
 
-      - name: Clone tun2socks
+      - name: Install Android SDK + NDK
         run: |
-          git clone https://github.com/xjasonlyu/tun2socks.git
-          git -C tun2socks rev-parse --short HEAD
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: Build libtun2socks.so (arm64-v8a)
-        env:
-          ANDROID_API: '21'
+      - name: Install gomobile
         run: |
-          set -e
-          cd tun2socks
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+          gomobile init
 
-          # Ensure NDK clang is available
-          test -x "$NDK_LLVM_BIN/clang"
+      - name: Create Wrapper and Build AAR
+        run: |
+          mkdir -p workspace/wrapper
+          cd workspace
+          git clone https://github.com/xjasonlyu/tun2socks.git library_src
+          cd wrapper
+          go mod init github.com/myuser/tun2socks
+          go mod edit -replace=github.com/xjasonlyu/tun2socks/v2=../library_src
 
-          # Go/cgo cross-compile settings
-          export CGO_ENABLED=1
-          export GOOS=android
-          export GOARCH=arm64
+          cat <<'EOF' > tun2socks.go
+          package tun2socks
+          import (
+              "context"
+              "fmt"
+              "log"
+              "github.com/xjasonlyu/tun2socks/v2/core"
+              "github.com/xjasonlyu/tun2socks/v2/proxy"
+              "github.com/xjasonlyu/tun2socks/v2/tun"
+              _ "golang.org/x/mobile/bind"
+          )
+          var (
+              ctx    context.Context
+              cancel context.CancelFunc
+          )
+          func Start(fd int, proxyURL string) error {
+              ctx, cancel = context.WithCancel(context.Background())
+              mtu := 1500
+              tunDev, err := tun.Open(fmt.Sprintf("fd://%d", fd), mtu)
+              if err != nil { return fmt.Errorf("failed to open tun device: %w", err) }
+              proxyHandler, err := proxy.New(proxyURL)
+              if err != nil { return fmt.Errorf("failed to create proxy handler: %w", err) }
+              lwipStack := core.NewLWIPStack()
+              core.RegisterTCPConnHandler(proxyHandler)
+              core.RegisterUDPConnHandler(proxyHandler)
+              core.RegisterOutputFn(func(data []byte, writeCount int) { tunDev.Write(data[:writeCount]) })
+              log.Println("tun2socks running")
+              go lwipStack.Start()
+              packet := make([]byte, mtu)
+              for {
+                  select {
+                  case <-ctx.Done():
+                      return nil
+                  default:
+                      n, err := tunDev.Read(packet)
+                      if err != nil { return err }
+                      lwipStack.Write(packet[:n])
+                  }
+              }
+          }
+          func Stop() {
+              if cancel != nil { cancel() }
+              log.Println("tun2socks stopping")
+          }
+EOF
 
-          # Use NDK clang with explicit target triple
-          export CC="$NDK_LLVM_BIN/clang"
-          export CXX="$NDK_LLVM_BIN/clang++"
-          export CGO_CFLAGS="--target=aarch64-linux-android${ANDROID_API}"
-          export CGO_CXXFLAGS="--target=aarch64-linux-android${ANDROID_API}"
-          export CGO_LDFLAGS="--target=aarch64-linux-android${ANDROID_API}"
+          go get golang.org/x/mobile/bind
+          go get github.com/xjasonlyu/tun2socks/v2
+          go mod tidy
 
-          mkdir -p ../out/jniLibs/arm64-v8a
-          go build -v -trimpath -buildmode=c-shared -o ../out/jniLibs/arm64-v8a/libtun2socks.so .
-          ls -lah ../out/jniLibs/arm64-v8a
+          gomobile bind -v -target=android/arm64 -androidapi=21 -o ../libtun2socks.aar .
+          ls -lh ../libtun2socks.aar
 
-      - name: Upload .so artifact
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-so-arm64
-          path: out/jniLibs/arm64-v8a/libtun2socks.so
+          name: libtun2socks-aar
+          path: workspace/libtun2socks.aar
