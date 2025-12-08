@@ -1,4 +1,4 @@
-name: Build Full tun2socks AAR
+name: Build tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -8,14 +8,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      GO111MODULE: "on"
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
@@ -23,7 +21,7 @@ jobs:
       - name: Install prerequisites
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y unzip wget zip curl build-essential
+          sudo apt-get install -y unzip wget curl zip
 
       - name: Install Android SDK + NDK
         run: |
@@ -32,11 +30,13 @@ jobs:
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O tools.zip
           unzip -q tools.zip -d cmdline-tools
           rm tools.zip
+
           export ANDROID_SDK_ROOT=$HOME/android
-          yes | $HOME/android/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-33" "ndk;25.2.9519653"
+          yes | $HOME/android/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
+            "platform-tools" "platforms;android-33" "ndk;25.2.9519653"
+
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          NDK=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n1)
-          echo "ANDROID_NDK_HOME=$NDK" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n1)" >> $GITHUB_ENV
 
       - name: Install gomobile
         run: |
@@ -44,24 +44,23 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Prepare wrapper project (safe no-heredoc version)
+      - name: Prepare Wrapper Project (uses working tun2socks fork)
         run: |
           rm -rf tun2socks-wrapper
-          mkdir -p tun2socks-wrapper
+          mkdir tun2socks-wrapper
           cd tun2socks-wrapper
 
-          # clone core
-          git clone --depth 1 https://github.com/eycorsican/go-tun2socks.git core
+          # WORKING fork that has Shadowsocks
+          git clone --depth 1 https://github.com/xjasonlyu/tun2socks.git core
 
-          # create go.mod
           echo "module tun2socks-wrapper" > go.mod
           echo "" >> go.mod
           echo "go 1.22" >> go.mod
           echo "" >> go.mod
-          echo "require github.com/eycorsican/go-tun2socks v0.0.0" >> go.mod
-          echo "replace github.com/eycorsican/go-tun2socks => ./core" >> go.mod
+          echo "require github.com/xjasonlyu/tun2socks v0.0.0" >> go.mod
+          echo "replace github.com/xjasonlyu/tun2socks => ./core" >> go.mod
 
-          # create wrapper.go without heredoc
+          # generate wrapper.go
           echo "package tun2socks" > wrapper.go
           echo "" >> wrapper.go
           echo "import (" >> wrapper.go
@@ -69,27 +68,27 @@ jobs:
           echo "  \"log\"" >> wrapper.go
           echo "  \"os\"" >> wrapper.go
           echo "" >> wrapper.go
-          echo "  core \"github.com/eycorsican/go-tun2socks/core\"" >> wrapper.go
-          echo "  \"github.com/eycorsican/go-tun2socks/tun\"" >> wrapper.go
-          echo "  \"github.com/eycorsican/go-tun2socks/proxy/socks\"" >> wrapper.go
-          echo "  \"github.com/eycorsican/go-tun2socks/proxy/shadowsocks\"" >> wrapper.go
+          echo "  core \"github.com/xjasonlyu/tun2socks/core\"" >> wrapper.go
+          echo "  \"github.com/xjasonlyu/tun2socks/proxy/socks\"" >> wrapper.go
+          echo "  \"github.com/xjasonlyu/tun2socks/proxy/shadowsocks\"" >> wrapper.go
+          echo "  \"github.com/xjasonlyu/tun2socks/tun\"" >> wrapper.go
           echo ")" >> wrapper.go
           echo "" >> wrapper.go
           echo "var tunIF io.ReadWriteCloser" >> wrapper.go
           echo "" >> wrapper.go
-          echo "func StartTun(fd int, mtu int, socks5Addr string, ssAddr string, ssKey string, ssCipher string) error {" >> wrapper.go
+          echo "func StartTun(fd int, mtu int, socks5 string, ss string, key string, cipher string) error {" >> wrapper.go
           echo "  var err error" >> wrapper.go
           echo "  tunIF, err = tun.OpenTunDevice(fd, mtu)" >> wrapper.go
           echo "  if err != nil { return err }" >> wrapper.go
           echo "" >> wrapper.go
-          echo "  if socks5Addr != \"\" {" >> wrapper.go
-          echo "    core.RegisterTCPConnHandler(socks.NewTCPHandler(socks5Addr))" >> wrapper.go
-          echo "    core.RegisterUDPConnHandler(socks.NewUDPHandler(socks5Addr))" >> wrapper.go
+          echo "  if socks5 != \"\" {" >> wrapper.go
+          echo "    core.RegisterTCPConnHandler(socks.NewTCPHandler(socks5))" >> wrapper.go
+          echo "    core.RegisterUDPConnHandler(socks.NewUDPHandler(socks5))" >> wrapper.go
           echo "  }" >> wrapper.go
           echo "" >> wrapper.go
-          echo "  if ssAddr != \"\" && ssKey != \"\" {" >> wrapper.go
-          echo "    core.RegisterTCPConnHandler(shadowsocks.NewTCPHandler(ssAddr, ssKey, ssCipher))" >> wrapper.go
-          echo "    core.RegisterUDPConnHandler(shadowsocks.NewUDPHandler(ssAddr, ssKey, ssCipher))" >> wrapper.go
+          echo "  if ss != \"\" && key != \"\" {" >> wrapper.go
+          echo "    core.RegisterTCPConnHandler(shadowsocks.NewTCPHandler(ss, key, cipher))" >> wrapper.go
+          echo "    core.RegisterUDPConnHandler(shadowsocks.NewUDPHandler(ss, key, cipher))" >> wrapper.go
           echo "  }" >> wrapper.go
           echo "" >> wrapper.go
           echo "  core.SetLogger(log.New(os.Stdout, \"[tun2socks] \", log.LstdFlags))" >> wrapper.go
@@ -97,19 +96,11 @@ jobs:
           echo "  return nil" >> wrapper.go
           echo "}" >> wrapper.go
           echo "" >> wrapper.go
-          echo "func StopTun() {" >> wrapper.go
-          echo "  if tunIF != nil {" >> wrapper.go
-          echo "    _ = tunIF.Close()" >> wrapper.go
-          echo "    tunIF = nil" >> wrapper.go
-          echo "  }" >> wrapper.go
-          echo "}" >> wrapper.go
+          echo "func StopTun() { if tunIF != nil { _ = tunIF.Close(); tunIF = nil } }" >> wrapper.go
           echo "" >> wrapper.go
-          echo "func SetLog(enabled bool) {" >> wrapper.go
-          echo "  if enabled {" >> wrapper.go
-          echo "    core.SetLogger(log.New(os.Stdout, \"[tun2socks] \", log.LstdFlags))" >> wrapper.go
-          echo "  } else {" >> wrapper.go
-          echo "    core.SetLogger(log.New(io.Discard, \"\", 0))" >> wrapper.go
-          echo "  }" >> wrapper.go
+          echo "func SetLog(enable bool) {" >> wrapper.go
+          echo "  if enable { core.SetLogger(log.New(os.Stdout, \"[tun2socks] \", log.LstdFlags)) }" >> wrapper.go
+          echo "  else { core.SetLogger(log.New(io.Discard, \"\", 0)) }" >> wrapper.go
           echo "}" >> wrapper.go
 
           go mod tidy
