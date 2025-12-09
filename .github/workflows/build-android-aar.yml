@@ -38,7 +38,8 @@ jobs:
       run: |
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
-        gomobile init
+        export PATH=$PATH:$(go env GOPATH)/bin
+        gomobile init -ndk $ANDROID_NDK_HOME
 
     - name: Clone tun2socks
       run: |
@@ -171,6 +172,7 @@ jobs:
         cd tun2socks
         export CGO_ENABLED=1
         export GO111MODULE=on
+        export PATH=$PATH:$(go env GOPATH)/bin
         
         # Build with tags to disable QUIC
         gomobile bind -v \
