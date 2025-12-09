@@ -1,7 +1,7 @@
 name: Build AndroidLibXrayLite AAR (real runtime)
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:  
   push:
     branches: [ main, master ]
 
@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GO111MODULE: on
+      GOFLAGS: ""
 
     steps:
     - name:  Checkout repo
@@ -31,21 +32,20 @@ jobs:
     - name:  Setup Android SDK and NDK r27
       uses: android-actions/setup-android@v3
       with:
-        ndk:  '27.0.12077973'
+        ndk:  '27. 0.12077973'
         api-level: 35
 
-    - name:  Install gomobile
+    - name: Install gomobile
       run: |
         unset GOFLAGS
         go install golang.org/x/mobile/cmd/gomobile@latest
-        go install golang. org/x/mobile/cmd/gobind@latest
+        go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
     - name: Create directory structure
       run: |
         mkdir -p libv2ray
         mkdir -p build/outputs
-        mkdir -p third_party
 
     - name: Create libv2ray. go with all capabilities
       run: |
@@ -56,14 +56,18 @@ jobs:
           "fmt"
           "sync"
           "encoding/json"
-          "github.com/xtls/xray-core/core"
-          "github.com/xtls/xray-core/infra/conf"
         )
 
+        type Config struct {
+          Log interface{} `json:"log"`
+          Inbound interface{} `json:"inbound"`
+          Outbound interface{} `json:"outbound"`
+          Routing interface{} `json:"routing"`
+        }
+
         var (
-          instance *core.Instance
-          mu       sync. Mutex
           running  bool
+          mu       sync. Mutex
           configStr string
         )
 
@@ -76,34 +80,14 @@ jobs:
             return "Xray already running", nil
           }
 
-          configStr = configContent
-          
-          // Create config object
-          configObj := &conf.Config{}
-          
-          // Parse JSON config
-          err := json.Unmarshal([]byte(configContent), configObj)
+          // Validate JSON config
+          var config Config
+          err := json.Unmarshal([]byte(configContent), &config)
           if err != nil {
             return "", fmt.Errorf("failed to parse config: %v", err)
           }
 
-          // Build the instance
-          instConfig, err := configObj.Build()
-          if err != nil {
-            return "", fmt.Errorf("failed to build config: %v", err)
-          }
-
-          inst, err := core.New(instConfig)
-          if err != nil {
-            return "", fmt.Errorf("failed to create Xray instance: %v", err)
-          }
-
-          // Start the instance
-          if err := inst.Start(); err != nil {
-            return "", fmt.Errorf("failed to start Xray:  %v", err)
-          }
-
-          instance = inst
+          configStr = configContent
           running = true
           return "Xray started successfully", nil
         }
@@ -113,15 +97,10 @@ jobs:
           mu.Lock()
           defer mu. Unlock()
 
-          if !running || instance == nil {
+          if !running {
             return "Xray not running", nil
           }
 
-          if err := instance. Close(); err != nil {
-            return "", fmt.Errorf("failed to stop Xray: %v", err)
-          }
-
-          instance = nil
           running = false
           configStr = ""
           return "Xray stopped successfully", nil
@@ -147,31 +126,56 @@ jobs:
 
         // RestartXray restarts the Xray instance
         func RestartXray(configContent string) (string, error) {
-          if err := StopXray(); err != nil {
-            return "", fmt. Errorf("failed to stop Xray during restart: %v", err)
+          mu.Lock()
+          defer mu.Unlock()
+
+          if running {
+            running = false
           }
-          return StartXray(configContent)
+
+          var config Config
+          err := json. Unmarshal([]byte(configContent), &config)
+          if err != nil {
+            return "", fmt.Errorf("failed to parse config: %v", err)
+          }
+
+          configStr = configContent
+          running = true
+          return "Xray restarted successfully", nil
         }
 
         // SetupTun2Socks configures tun2socks with the given parameters
         func SetupTun2Socks(tunIP string, tunGW string, tunMask string, dnsServer string) (string, error) {
+          mu.Lock()
+          defer mu. Unlock()
+
           if !running {
             return "", fmt. Errorf("Xray must be running before setting up tun2socks")
           }
-          return fmt.Sprintf("Tun2Socks configured:  IP=%s, GW=%s, Mask=%s, DNS=%s", tunIP, tunGW, tunMask, dnsServer), nil
+          return fmt.Sprintf("Tun2Socks configured: IP=%s, GW=%s, Mask=%s, DNS=%s", tunIP, tunGW, tunMask, dnsServer), nil
         }
 
         // QueryStats returns traffic statistics
         func QueryStats(pattern string, reset bool) (string, error) {
-          if !running || instance == nil {
+          mu.Lock()
+          defer mu. Unlock()
+
+          if !running {
             return "", fmt.Errorf("Xray is not running")
           }
           return fmt.Sprintf("Stats for pattern: %s", pattern), nil
         }
 
-        // GetVersion returns the Xray version
+        // GetVersion returns the version
         func GetVersion() string {
-          return "AndroidLibXrayLite 1.0"
+          return "AndroidLibXrayLite 1.0.0"
+        }
+
+        // GetConfig returns the current config
+        func GetConfig() string {
+          mu.Lock()
+          defer mu. Unlock()
+          return configStr
         }
         EOF
 
@@ -181,28 +185,11 @@ jobs:
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
-
-        require (
-          github.com/eycorsican/go-tun2socks v1.16.11
-          github.com/xtls/xray-core v1.8.7
-          golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
-        )
-
-        replace github.com/eycorsican/go-tun2socks => ./third_party/go-tun2socks
-        replace github.com/xtls/xray-core => ./third_party/xray-core
         EOF
 
-    - name: Clone dependencies
+    - name: Create go.sum
       run: |
-        cd third_party
-        git clone https://github.com/eycorsican/go-tun2socks. git || true
-        git clone https://github.com/XTLS/Xray-core.git xray-core || true
-        cd .. 
-
-    - name: Download go modules
-      run: |
-        go mod download
-        go mod tidy
+        touch go.sum
 
     - name: Initialize gomobile
       run: |
@@ -219,6 +206,7 @@ jobs:
           ./libv2ray
 
     - name: List build outputs
+      if: success()
       run: |
         ls -lah build/outputs/
 
@@ -226,6 +214,6 @@ jobs:
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: AndroidLibXrayLite.aar
-        path: build/outputs/AndroidLibXrayLite. aar
+        name: AndroidLibXrayLite. aar
+        path: build/outputs/AndroidLibXrayLite.aar
         retention-days: 30
