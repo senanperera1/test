@@ -24,12 +24,12 @@ jobs:
       uses: actions/setup-java@v4
       with:
         distribution:  'zulu'
-        java-version:  '17'
+        java-version: '17'
 
-    - name:  Setup Android SDK and NDK r27
+    - name: Setup Android SDK and NDK r27
       uses: android-actions/setup-android@v3
       with:
-        ndk:  '27. 0.12077973'
+        ndk:  '27.0.12077973'
         api-level: 35
 
     - name: Install gomobile
@@ -43,7 +43,37 @@ jobs:
         mkdir -p xray
         mkdir -p build/outputs
 
-    - name: Create main Go file
+    - name: Create xray package file
+      run: |
+        cat > xray/xraylib. go <<'EOF'
+        package xraylib
+
+        type XrayCore struct {
+          Running bool
+          Config  string
+        }
+
+        func NewXrayCore() *XrayCore {
+          return &XrayCore{
+            Running:  false,
+            Config:  "",
+          }
+        }
+
+        func (x *XrayCore) Start(config string) error {
+          x.Running = true
+          x.Config = config
+          return nil
+        }
+
+        func (x *XrayCore) Stop() error {
+          x.Running = false
+          x.Config = ""
+          return nil
+        }
+        EOF
+
+    - name: Create main Go file with exports
       run: |
         cat > main.go <<'EOF'
         package main
@@ -59,7 +89,7 @@ jobs:
 
         var (
           xrayInstance *xraylib.XrayCore
-          mu           sync. Mutex
+          mu           sync.Mutex
         )
 
         //export StartXray
@@ -89,8 +119,8 @@ jobs:
 
         //export StopXray
         func StopXray() *C.char {
-          mu. Lock()
-          defer mu. Unlock()
+          mu.Lock()
+          defer mu.Unlock()
 
           if xrayInstance == nil || !xrayInstance.Running {
             return C.CString("Xray not running")
@@ -103,7 +133,7 @@ jobs:
         }
 
         //export IsRunning
-        func IsRunning() C.int {
+        func IsRunning() int {
           mu.Lock()
           defer mu.Unlock()
 
@@ -142,7 +172,7 @@ jobs:
             Config:  configStr,
           }
 
-          return C.CString("Xray restarted successfully")
+          return C. CString("Xray restarted successfully")
         }
 
         //export SetupTun2Socks
@@ -166,10 +196,10 @@ jobs:
         //export QueryStats
         func QueryStats(pattern *C.char) *C.char {
           mu.Lock()
-          defer mu. Unlock()
+          defer mu.Unlock()
 
           if xrayInstance == nil || !xrayInstance.Running {
-            return C. CString("Error: Xray is not running")
+            return C.CString("Error: Xray is not running")
           }
 
           pat := C.GoString(pattern)
@@ -195,36 +225,6 @@ jobs:
         func main() {}
         EOF
 
-    - name: Create xray package
-      run: |
-        cat > xray/xraylib. go <<'EOF'
-        package xraylib
-
-        type XrayCore struct {
-          Running bool
-          Config  string
-        }
-
-        func NewXrayCore() *XrayCore {
-          return &XrayCore{
-            Running: false,
-            Config:  "",
-          }
-        }
-
-        func (x *XrayCore) Start(config string) error {
-          x.Running = true
-          x.Config = config
-          return nil
-        }
-
-        func (x *XrayCore) Stop() error {
-          x.Running = false
-          x.Config = ""
-          return nil
-        }
-        EOF
-
     - name: Create go.mod
       run: |
         cat > go.mod <<'EOF'
@@ -232,10 +232,12 @@ jobs:
 
         go 1.25
 
-        require (
-          golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
-        )
+        require golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
         EOF
+
+    - name: Create go.sum
+      run: |
+        touch go.sum
 
     - name: Download dependencies
       run: |
@@ -248,16 +250,17 @@ jobs:
         gomobile init
 
     - name: Build AAR with gomobile bind
-      run: |
+      run:  |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
         gomobile bind -v \
           -target=android \
           -androidapi=35 \
-          -o build/outputs/AndroidLibXrayLite.aar
+          -o build/outputs/AndroidLibXrayLite. aar \
+          github.com/2dust/AndroidLibXrayLite
 
     - name: List build outputs
-      if: success()
+      if:  success()
       run: |
         ls -lah build/outputs/
 
