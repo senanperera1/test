@@ -40,9 +40,8 @@ jobs:
     - name: Setup Gradle
       uses: gradle/gradle-build-action@v3
 
-    - name: Install gomobile
+    - name: Install gomobile tools
       run: |
-        # unset GOFLAGS so tool install can query proxy
         unset GOFLAGS
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
@@ -66,22 +65,26 @@ jobs:
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
 
-    - name: Ensure Go module, pin and vendor go-tun2socks v1.16.7
+    - name: Ensure Go module, pin deps and vendor
       run: |
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
 
-        require github.com/eycorsican/go-tun2socks v1.16.7
+        require (
+          github.com/eycorsican/go-tun2socks v1.16.7
+          golang.org/x/mobile latest
+        )
 
         replace github.com/eycorsican/go-tun2socks => github.com/eycorsican/go-tun2socks v1.16.7
         EOF
 
+        go get golang.org/x/mobile@latest
         go mod tidy
         go mod vendor
 
-    - name: Add tun2socks exports (expects v1.16.7 API)
+    - name: Add tun2socks exports
       run: |
         mkdir -p libv2ray
         cat > libv2ray/tun.go <<'EOF'
@@ -131,20 +134,13 @@ jobs:
         export GO111MODULE=on
         export GOFLAGS="-mod=vendor"
 
-        if [ -f "Makefile" ]; then
-          make lib || make android || make
-        elif [ -f "build.gradle" ] || [ -f "gradlew" ]; then
-          chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleRelease || gradle assembleRelease
-        else
-          gomobile bind -v \
-            -target=android \
-            -androidapi=35 \
-            -ldflags="-s -w" \
-            -o libxray.aar \
-            -javapkg=io.github.androidlibxraylite \
-            ./libv2ray
-        fi
+        gomobile bind -v \
+          -target=android \
+          -androidapi=35 \
+          -ldflags="-s -w" \
+          -o libxray.aar \
+          -javapkg=io.github.androidlibxraylite \
+          ./libv2ray
 
     - name: Find and verify AAR
       run: |
