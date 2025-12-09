@@ -78,19 +78,20 @@ jobs:
         )
 
         var tunRunning bool
-        var lwipStack core.LWIPStack
+        var tun core.Tun2Socks
 
         // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address/port.
         func TunStart(fd int, socksAddr string, port uint16) bool {
             if tunRunning {
                 return true
             }
-            lwipStack = core.NewLWIPStack()
 
-            lwipStack.RegisterTCPConnectionHandler(socks.NewTCPHandler(socksAddr, port))
-            lwipStack.RegisterUDPConnectionHandler(socks.NewUDPHandler(socksAddr, port, 30*time.Second))
+            tcpHandler := socks.NewTCPHandler(socksAddr, port)
+            udpHandler := socks.NewUDPHandler(socksAddr, port, 30*time.Second)
 
-            go lwipStack.Run(fd)
+            tun = core.NewTun2Socks(fd, tcpHandler, udpHandler)
+            go tun.Start()
+
             tunRunning = true
             return true
         }
@@ -98,7 +99,7 @@ jobs:
         // TunStop stops the tun2socks loop.
         func TunStop() {
             if tunRunning {
-                lwipStack.Close()
+                tun.Stop()
                 tunRunning = false
             }
         }
