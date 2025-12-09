@@ -504,7 +504,7 @@ jobs:
         body: |
           ## ✅ Production-Ready tun2socks AAR
           
-          **Built**: $(date)
+          **Build**: ${{ github.run_number }}
           **Go Version**: 1.22.10
           **NDK**: 25.2.9519653
           
@@ -516,9 +516,9 @@ jobs:
           - ✅ Battle-tested and stable
           
           ### Quick Start
-          1. Download `tun2socks.aar`
-          2. Copy to `app/libs/`
-          3. See `USAGE.md` for complete integration guide
+          1. Download tun2socks.aar
+          2. Copy to app/libs/
+          3. See USAGE.md for complete integration guide
           
           ### What's Inside
           - Native libraries for ARM, ARM64, x86, x86_64
@@ -526,4 +526,4 @@ jobs:
           - Complete documentation
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      continue-on-error: tr
+      continue-on-error: true
