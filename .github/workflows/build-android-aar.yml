@@ -9,11 +9,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      GOFLAGS: -mod=vendor
-      GOPROXY: direct
-      GOSUMDB: off
-
     steps:
     - name: Checkout AndroidLibXrayLite
       uses: actions/checkout@v4
@@ -47,6 +42,8 @@ jobs:
 
     - name: Install gomobile
       run: |
+        # unset GOFLAGS so tool install can query proxy
+        unset GOFLAGS
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
@@ -69,29 +66,22 @@ jobs:
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
 
-    - name: Clone go-tun2socks v1.16.7 locally and wire replace
+    - name: Ensure Go module, pin and vendor go-tun2socks v1.16.7
       run: |
-        git clone --depth 1 --branch v1.16.7 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks
-
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
 
-        require (
-          github.com/eycorsican/go-tun2socks v1.16.7
-        )
+        require github.com/eycorsican/go-tun2socks v1.16.7
 
-        replace github.com/eycorsican/go-tun2socks => ./third_party/go-tun2socks
+        replace github.com/eycorsican/go-tun2socks => github.com/eycorsican/go-tun2socks v1.16.7
         EOF
 
         go mod tidy
         go mod vendor
 
-        # Assert local replace is in effect
-        test -f third_party/go-tun2socks/core/tun.go || ls -R third_party/go-tun2socks | head
-
-    - name: Add tun2socks exports (expects v1.16.7 API with NewTun2Socks)
+    - name: Add tun2socks exports (expects v1.16.7 API)
       run: |
         mkdir -p libv2ray
         cat > libv2ray/tun.go <<'EOF'
@@ -110,7 +100,6 @@ jobs:
             Stop()
         }
 
-        // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address/port.
         func TunStart(fd int, socksAddr string, port uint16) bool {
             if tunRunning {
                 return true
@@ -127,7 +116,6 @@ jobs:
             return true
         }
 
-        // TunStop stops the tun2socks loop.
         func TunStop() {
             if tunRunning && tun != nil {
                 tun.Stop()
@@ -149,7 +137,6 @@ jobs:
           chmod +x gradlew 2>/dev/null || true
           ./gradlew assembleRelease || gradle assembleRelease
         else
-          # Use local replace + vendored deps to prevent drift
           gomobile bind -v \
             -target=android \
             -androidapi=35 \
