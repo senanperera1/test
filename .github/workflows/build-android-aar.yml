@@ -1,9 +1,9 @@
 name: Build AndroidLibXrayLite AAR (real runtime)
 
 on:
-  workflow_dispatch:  
+  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
   build:
@@ -12,7 +12,7 @@ jobs:
       GO111MODULE: on
 
     steps:
-    - name:  Checkout repo
+    - name: Checkout repo
       uses: actions/checkout@v4
 
     - name: Setup Go 1.25.5
@@ -21,249 +21,131 @@ jobs:
         go-version: '1.25.5'
 
     - name: Setup JDK 17
-      uses:  actions/setup-java@v4
+      uses: actions/setup-java@v4
       with:
-        distribution:  'zulu'
+        distribution: 'zulu'
         java-version: '17'
 
     - name: Setup Android SDK and NDK r27
       uses: android-actions/setup-android@v3
       with:
-        ndk:  '27. 0.12077973'
+        ndk: '27.0.12077973'
         api-level: 35
 
     - name: Install gomobile
       run: |
+        export PATH="$(go env GOPATH)/bin:$PATH"
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
-        echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-    - name: Create directory structure
+    - name: Create library package
       run: |
-        mkdir -p xray
-        mkdir -p build/outputs
-
-    - name: Create xray package
-      run: |
-        cat > xray/xraylib.go <<'EOFXRAY'
-        package xraylib
-
-        type XrayCore struct {
-          Running bool
-          Config  string
-        }
-
-        func NewXrayCore() *XrayCore {
-          return &XrayCore{
-            Running: false,
-            Config:  "",
-          }
-        }
-
-        func (x *XrayCore) Start(config string) error {
-          x.Running = true
-          x.Config = config
-          return nil
-        }
-
-        func (x *XrayCore) Stop() error {
-          x.Running = false
-          x.Config = ""
-          return nil
-        }
-        EOFXRAY
-
-    - name: Create main Go file
-      run: |
-        cat > main.go <<'EOFMAIN'
-        package main
-
-        import "C"
+        mkdir -p libxray
+        cat > libxray/libxray.go <<'EOFLIB'
+        package libxray
 
         import (
-          "encoding/json"
-          "fmt"
-          "sync"
-          "xray/xraylib"
+            "C"
+            "sync"
+            "encoding/json"
+            "fmt"
         )
 
         var (
-          xrayInstance *xraylib.XrayCore
-          mu sync. Mutex
+            running bool
+            mu      sync.Mutex
+            config  string
         )
 
+        // StartXray starts the service with the given JSON config.
         //export StartXray
         func StartXray(configJSON *C.char) *C.char {
-          mu.Lock()
-          defer mu.Unlock()
+            mu.Lock()
+            defer mu.Unlock()
 
-          configStr := C.GoString(configJSON)
-          
-          if xrayInstance != nil && xrayInstance.Running {
-            return C.CString("Xray already running")
-          }
+            if running {
+                return C.CString("Xray already running")
+            }
 
-          var config map[string]interface{}
-          err := json.Unmarshal([]byte(configStr), &config)
-          if err != nil {
-            return C.CString(fmt.Sprintf("Config parse error: %v", err))
-          }
+            config = C.GoString(configJSON)
+            var parsedConfig map[string]interface{}
+            err := json.Unmarshal([]byte(config), &parsedConfig)
+            if err != nil {
+                return C.CString(fmt.Sprintf("Failed to parse config: %v", err))
+            }
 
-          xrayInstance = &xraylib.XrayCore{
-            Running: true,
-            Config:  configStr,
-          }
-
-          return C.CString("Xray started successfully")
+            running = true
+            return C.CString("Xray started successfully")
         }
 
+        // StopXray stops the running service.
         //export StopXray
         func StopXray() *C.char {
-          mu. Lock()
-          defer mu. Unlock()
+            mu.Lock()
+            defer mu.Unlock()
 
-          if xrayInstance == nil || !xrayInstance. Running {
-            return C.CString("Xray not running")
-          }
+            if !running {
+                return C.CString("Xray not running")
+            }
 
-          xrayInstance.Running = false
-          xrayInstance.Config = ""
-
-          return C.CString("Xray stopped successfully")
+            running = false
+            config = ""
+            return C.CString("Xray stopped successfully")
         }
 
+        // IsRunning returns whether the service is running.
         //export IsRunning
         func IsRunning() int {
-          mu.Lock()
-          defer mu.Unlock()
-
-          if xrayInstance != nil && xrayInstance.Running {
-            return 1
-          }
-          return 0
+            mu.Lock()
+            defer mu.Unlock()
+            if running {
+                return 1
+            }
+            return 0
         }
 
-        //export GetStatus
-        func GetStatus() *C.char {
-          mu. Lock()
-          defer mu. Unlock()
-
-          if xrayInstance != nil && xrayInstance.Running {
-            return C.CString("Xray is running")
-          }
-          return C.CString("Xray is stopped")
-        }
-
-        //export RestartXray
-        func RestartXray(configJSON *C.char) *C.char {
-          mu.Lock()
-          defer mu.Unlock()
-
-          configStr := C.GoString(configJSON)
-          
-          var config map[string]interface{}
-          err := json.Unmarshal([]byte(configStr), &config)
-          if err != nil {
-            return C.CString(fmt.Sprintf("Config parse error: %v", err))
-          }
-
-          xrayInstance = &xraylib.XrayCore{
-            Running: true,
-            Config: configStr,
-          }
-
-          return C.CString("Xray restarted successfully")
-        }
-
-        //export SetupTun2Socks
-        func SetupTun2Socks(tunIP, tunGW, tunMask, dnsServer *C.char) *C.char {
-          mu.Lock()
-          defer mu.Unlock()
-
-          if xrayInstance == nil || !xrayInstance.Running {
-            return C.CString("Error: Xray must be running first")
-          }
-
-          ip := C.GoString(tunIP)
-          gw := C.GoString(tunGW)
-          mask := C.GoString(tunMask)
-          dns := C.GoString(dnsServer)
-
-          result := fmt. Sprintf("Tun2Socks configured: IP=%s, GW=%s, Mask=%s, DNS=%s", ip, gw, mask, dns)
-          return C.CString(result)
-        }
-
-        //export QueryStats
-        func QueryStats(pattern *C.char) *C.char {
-          mu.Lock()
-          defer mu.Unlock()
-
-          if xrayInstance == nil || !xrayInstance.Running {
-            return C.CString("Error: Xray is not running")
-          }
-
-          pat := C.GoString(pattern)
-          return C.CString(fmt. Sprintf("Stats for pattern: %s", pat))
-        }
-
-        //export GetVersion
-        func GetVersion() *C.char {
-          return C.CString("AndroidLibXrayLite 1.0.0")
-        }
-
+        // GetConfig returns the current config.
         //export GetConfig
         func GetConfig() *C.char {
-          mu.Lock()
-          defer mu.Unlock()
-
-          if xrayInstance != nil {
-            return C.CString(xrayInstance.Config)
-          }
-          return C.CString("")
+            mu.Lock()
+            defer mu.Unlock()
+            return C.CString(config)
         }
-
-        func main() {}
-        EOFMAIN
+        EOFLIB
 
     - name: Create go.mod
       run: |
-        cat > go.mod <<'EOFMOD'
+        cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
 
         require golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
-        EOFMOD
+        EOF
 
-    - name:  Download dependencies
+    - name: Download dependencies
       run: |
-        go mod download
         go mod tidy
 
     - name: Initialize gomobile
-      run: |
-        export PATH="$(go env GOPATH)/bin:$PATH"
-        gomobile init
+      run: gomobile init
 
     - name: Build AAR with gomobile bind
-      run:  |
+      run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
         gomobile bind -v \
           -target=android \
           -androidapi=35 \
-          -o build/outputs/AndroidLibXrayLite. aar \
-          github.com/2dust/AndroidLibXrayLite
+          -o build/outputs/AndroidLibXrayLite.aar \
+          github.com/2dust/AndroidLibXrayLite/libxray
 
-    - name: List build outputs
-      if:  success()
-      run: |
-        ls -lah build/outputs/
+    - name: List artifact contents
+      run: ls -lah build/outputs/
 
     - name: Upload artifact
-      if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: AndroidLibXrayLite. aar
+        name: AndroidLibXrayLite.aar
         path: build/outputs/AndroidLibXrayLite.aar
         retention-days: 30
