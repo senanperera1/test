@@ -1,13 +1,10 @@
-name: Build AndroidLibXrayLite AAR (16KB Page Size - Android 15+)
+name: Build AndroidLibXrayLite AAR (16KB Page Size - Android 15+ with tun2socks exports)
 
 on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
 
-permissions:
-  contents: write
-  
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -57,18 +54,48 @@ jobs:
     
     - name: Patch for 16KB Page Size
       run: |
-        # Patch Makefile for API 35
         if [ -f "Makefile" ]; then
           sed -i 's/-androidapi [0-9]\+/-androidapi 35/g' Makefile
           sed -i 's/-androidapi=[0-9]\+/-androidapi=35/g' Makefile
         fi
-        
-        # Patch build.gradle files
         find . -name "build.gradle*" -type f -exec sed -i \
           -e 's/compileSdkVersion [0-9]\+/compileSdkVersion 35/g' \
           -e 's/targetSdkVersion [0-9]\+/targetSdkVersion 35/g' \
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
+    
+    - name: Add tun2socks exports
+      run: |
+        cat > libv2ray/tun.go <<'EOF'
+        package libv2ray
+
+        import (
+            "github.com/eycorsican/go-tun2socks/core"
+            "github.com/eycorsican/go-tun2socks/proxy/socks"
+        )
+
+        var tunRunning bool
+
+        // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address.
+        func TunStart(fd int, socksAddr string) bool {
+            if tunRunning {
+                return true
+            }
+            core.RegisterOutput(socks.NewTCPHandler(socksAddr, nil))
+            core.RegisterOutput(socks.NewUDPHandler(socksAddr, nil))
+            go core.Run(fd)
+            tunRunning = true
+            return true
+        }
+
+        // TunStop stops the tun2socks loop.
+        func TunStop() {
+            if tunRunning {
+                core.Stop()
+                tunRunning = false
+            }
+        }
+        EOF
     
     - name: Build AAR
       run: |
@@ -76,20 +103,12 @@ jobs:
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
         export GO111MODULE=on
         
-        # AndroidLibXrayLite uses Makefile
         if [ -f "Makefile" ]; then
-          echo "Building with Makefile..."
           make lib || make android || make
-        
-        # Fallback to Gradle
         elif [ -f "build.gradle" ] || [ -f "gradlew" ]; then
-          echo "Building with Gradle..."
           chmod +x gradlew 2>/dev/null || true
           ./gradlew assembleRelease || gradle assembleRelease
-        
-        # Last resort: direct gomobile
         else
-          echo "Direct gomobile build..."
           go mod download
           gomobile bind -v \
             -target=android \
@@ -97,22 +116,19 @@ jobs:
             -ldflags="-s -w" \
             -o libxray.aar \
             -javapkg=io.github.androidlibxraylite \
-            .
+            ./libv2ray
         fi
     
     - name: Find and verify AAR
       run: |
         echo "=== Searching for AAR files ==="
         find . -name "*.aar" -type f
-        
         mkdir -p build/outputs
         find . -name "*.aar" -type f -exec cp {} build/outputs/ \;
-        
         if ! ls build/outputs/*.aar 1> /dev/null 2>&1; then
           echo "❌ No AAR found!"
           exit 1
         fi
-        
         echo "✅ AAR built successfully!"
         ls -lh build/outputs/
     
@@ -128,18 +144,21 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: android15-v${{ github.run_number }}
-        name: AndroidLibXrayLite (16KB Page Size)
+        name: AndroidLibXrayLite (16KB Page Size + tun2socks exports)
         files: build/outputs/*.aar
         body: |
           ## AndroidLibXrayLite - Android 15+ Compatible (16KB Page Size)
           
           ✅ Xray Core + tun2socks
+          ✅ TunStart/TunStop exported
           ✅ 16KB page size support
           ✅ NDK r27, Go 1.23, API 35
           
           **Usage with external XRayCore:**
           ```kotlin
-          Libv2ray.tunStart(tunFd, "127.0.0.1:10808")
+          Libv2ray.TunStart(tunFd, "127.0.0.1:10808")
+          ...
+          Libv2ray.TunStop()
           ```
         draft: false
         prerelease: false
