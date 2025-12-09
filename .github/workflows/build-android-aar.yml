@@ -66,6 +66,9 @@ jobs:
     
     - name: Add tun2socks exports
       run: |
+        # Ensure libv2ray directory exists
+        mkdir -p libv2ray
+
         cat > libv2ray/tun.go <<'EOF'
         package libv2ray
 
