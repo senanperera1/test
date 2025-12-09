@@ -66,27 +66,31 @@ jobs:
     
     - name: Add tun2socks exports
       run: |
-        # Ensure libv2ray directory exists
         mkdir -p libv2ray
-
         cat > libv2ray/tun.go <<'EOF'
         package libv2ray
 
         import (
+            "time"
+
             "github.com/eycorsican/go-tun2socks/core"
             "github.com/eycorsican/go-tun2socks/proxy/socks"
         )
 
         var tunRunning bool
+        var lwipStack core.LWIPStack
 
-        // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address.
-        func TunStart(fd int, socksAddr string) bool {
+        // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address/port.
+        func TunStart(fd int, socksAddr string, port uint16) bool {
             if tunRunning {
                 return true
             }
-            core.RegisterOutput(socks.NewTCPHandler(socksAddr, nil))
-            core.RegisterOutput(socks.NewUDPHandler(socksAddr, nil))
-            go core.Run(fd)
+            lwipStack = core.NewLWIPStack()
+
+            lwipStack.RegisterTCPConnectionHandler(socks.NewTCPHandler(socksAddr, port))
+            lwipStack.RegisterUDPConnectionHandler(socks.NewUDPHandler(socksAddr, port, 30*time.Second))
+
+            go lwipStack.Run(fd)
             tunRunning = true
             return true
         }
@@ -94,7 +98,7 @@ jobs:
         // TunStop stops the tun2socks loop.
         func TunStop() {
             if tunRunning {
-                core.Stop()
+                lwipStack.Close()
                 tunRunning = false
             }
         }
@@ -159,7 +163,7 @@ jobs:
           
           **Usage with external XRayCore:**
           ```kotlin
-          Libv2ray.TunStart(tunFd, "127.0.0.1:10808")
+          Libv2ray.TunStart(tunFd, "127.0.0.1", 10808)
           ...
           Libv2ray.TunStop()
           ```
