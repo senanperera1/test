@@ -37,14 +37,11 @@ jobs:
     timeout-minutes: 30
     
     env:
-      # Critical: Android SDK tools need JDK 17+, but build needs JDK 11
-      # We'll install both and switch between them
       GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=512m"'
       
     steps:
     ############################################################################
     # STEP 1: Clone the tun2socks-android repository
-    # This is the source we're building from - no forking needed
     ############################################################################
     - name: 📥 Checkout tun2socks-android repository
       uses: actions/checkout@v4
@@ -62,12 +59,11 @@ jobs:
         ls -la
         echo ""
         echo "Gradle wrapper exists:"
-        ls -la gradle/wrapper/ || echo "⚠️ No wrapper found"
+        ls -la gradle/wrapper/ || echo "No wrapper found"
         echo ""
         
     ############################################################################
     # STEP 2: Setup JDK 17 (Required for Android SDK tools)
-    # The sdkmanager and Android SDK command-line tools require JDK 17+
     ############################################################################
     - name: ☕ Set up JDK 17 (for Android SDK tools)
       uses: actions/setup-java@v4
@@ -87,8 +83,7 @@ jobs:
         echo ""
         
     ############################################################################
-    # STEP 3: Setup Android SDK with proper license acceptance
-    # This must be done with JDK 17 to avoid the exit code 1 error
+    # STEP 3: Setup Android SDK
     ############################################################################
     - name: 🤖 Setup Android SDK
       uses: android-actions/setup-android@v3
@@ -101,40 +96,28 @@ jobs:
         echo "==================================="
         echo "ANDROID_HOME: $ANDROID_HOME"
         echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
-        ls -la $ANDROID_SDK_ROOT/ || echo "⚠️ SDK root not found"
+        ls -la $ANDROID_SDK_ROOT/ || echo "SDK root not found"
         echo ""
         
     ############################################################################
-    # STEP 4: Install Android NDK 21.4.7075529
-    # This specific NDK version is compatible with the old CMake version
-    # required by this project (CMake 3.10.2)
+    # STEP 4: Install Android NDK
     ############################################################################
     - name: 📦 Install Android NDK 21.4.7075529
       run: |
         echo "==================================="
         echo "Installing Android NDK"
         echo "==================================="
-        # Accept all licenses first
         yes | sdkmanager --licenses || true
         
-        # Install NDK
         echo "Installing NDK 21.4.7075529..."
-        sdkmanager --install "ndk;21.4.7075529" || {
-          echo "❌ Failed to install NDK, trying alternative method..."
-          sdkmanager --install "ndk;21.3.6528147" || {
-            echo "❌ Both NDK versions failed, will try to continue..."
-            exit 0
-          }
-        }
+        sdkmanager --install "ndk;21.4.7075529" || echo "Failed to install primary NDK" && sdkmanager --install "ndk;21.3.6528147" || echo "Failed to install fallback NDK"
         
         echo ""
         echo "NDK installation complete"
-        ls -la $ANDROID_SDK_ROOT/ndk/ || echo "⚠️ NDK directory not found"
+        ls -la $ANDROID_SDK_ROOT/ndk/ || echo "NDK directory not found"
         
     ############################################################################
-    # STEP 5: Install CMake 3.10.2
-    # CRITICAL: This project requires exactly CMake 3.10.2
-    # The error showed it was looking for 3.10.2 but found newer versions
+    # STEP 5: Install CMake
     ############################################################################
     - name: 🔧 Install CMake 3.10.2.4988404
       run: |
@@ -142,21 +125,11 @@ jobs:
         echo "Installing CMake 3.10.2"
         echo "==================================="
         
-        # Try to install the exact version
-        sdkmanager --install "cmake;3.10.2.4988404" || {
-          echo "⚠️ Exact CMake version not available, trying alternatives..."
-          
-          # Try other compatible versions
-          sdkmanager --install "cmake;3.18.1" || \
-          sdkmanager --install "cmake;3.22.1" || {
-            echo "⚠️ CMake installation failed, will use system CMake"
-            exit 0
-          }
-        }
+        sdkmanager --install "cmake;3.10.2.4988404" || echo "Exact CMake version not available" && sdkmanager --install "cmake;3.18.1" || sdkmanager --install "cmake;3.22.1" || echo "CMake installation failed"
         
         echo ""
         echo "CMake installation complete"
-        ls -la $ANDROID_SDK_ROOT/cmake/ || echo "⚠️ CMake directory not found"
+        ls -la $ANDROID_SDK_ROOT/cmake/ || echo "CMake directory not found"
         
     - name: ✅ Verify NDK and CMake installations
       run: |
@@ -164,51 +137,45 @@ jobs:
         echo "Verifying NDK and CMake"
         echo "==================================="
         
-        # Find installed NDK versions
         echo "Available NDK versions:"
         ls -la $ANDROID_SDK_ROOT/ndk/ 2>/dev/null || echo "No NDK found"
         
-        # Find installed CMake versions
         echo ""
         echo "Available CMake versions:"
         ls -la $ANDROID_SDK_ROOT/cmake/ 2>/dev/null || echo "No CMake found"
         
-        # Set NDK path to any available version
         if [ -d "$ANDROID_SDK_ROOT/ndk/21.4.7075529" ]; then
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> $GITHUB_ENV
-          echo "✅ Using NDK 21.4.7075529"
+          echo "Using NDK 21.4.7075529"
         elif [ -d "$ANDROID_SDK_ROOT/ndk/21.3.6528147" ]; then
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/21.3.6528147" >> $GITHUB_ENV
-          echo "✅ Using NDK 21.3.6528147"
+          echo "Using NDK 21.3.6528147"
         else
           NDK_VERSION=$(ls $ANDROID_SDK_ROOT/ndk/ 2>/dev/null | head -1)
           if [ ! -z "$NDK_VERSION" ]; then
             echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> $GITHUB_ENV
-            echo "✅ Using NDK $NDK_VERSION"
+            echo "Using NDK $NDK_VERSION"
           else
-            echo "❌ No NDK found!"
+            echo "No NDK found!"
             exit 1
           fi
         fi
         
-        # Set CMake path
         if [ -d "$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" ]; then
           echo "CMAKE_DIR=$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" >> $GITHUB_ENV
-          echo "✅ Using CMake 3.10.2.4988404"
+          echo "Using CMake 3.10.2.4988404"
         else
           CMAKE_VERSION=$(ls $ANDROID_SDK_ROOT/cmake/ 2>/dev/null | head -1)
           if [ ! -z "$CMAKE_VERSION" ]; then
             echo "CMAKE_DIR=$ANDROID_SDK_ROOT/cmake/$CMAKE_VERSION" >> $GITHUB_ENV
-            echo "✅ Using CMake $CMAKE_VERSION"
+            echo "Using CMake $CMAKE_VERSION"
           else
-            echo "⚠️ No CMake found in SDK, will use system CMake"
+            echo "No CMake found in SDK, will use system CMake"
           fi
         fi
         
     ############################################################################
-    # STEP 6: Switch to JDK 11 (Required for building this old project)
-    # The project's Gradle configuration expects Java 11
-    # Modern Android Gradle Plugin needs 17, but this old project needs 11
+    # STEP 6: Switch to JDK 11
     ############################################################################
     - name: ☕ Set up JDK 11 (for building the project)
       uses: actions/setup-java@v4
@@ -228,9 +195,7 @@ jobs:
         echo ""
         
     ############################################################################
-    # STEP 7: Create local.properties file
-    # This tells Gradle exactly where to find SDK, NDK, and CMake
-    # Prevents Gradle from auto-downloading incompatible versions
+    # STEP 7: Create local.properties
     ############################################################################
     - name: 📝 Create local.properties with all paths
       run: |
@@ -238,13 +203,9 @@ jobs:
         echo "Creating local.properties"
         echo "==================================="
         
-        cat > local.properties << EOF
-# Auto-generated by GitHub Actions
-sdk.dir=$ANDROID_SDK_ROOT
-ndk.dir=$ANDROID_NDK_HOME
-EOF
+        echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+        echo "ndk.dir=$ANDROID_NDK_HOME" >> local.properties
         
-        # Add CMake path if available
         if [ ! -z "$CMAKE_DIR" ]; then
           echo "cmake.dir=$CMAKE_DIR" >> local.properties
         fi
@@ -255,8 +216,7 @@ EOF
         echo ""
         
     ############################################################################
-    # STEP 8: Configure gradle.properties for optimal build
-    # Prevent out-of-memory errors and configure for CI environment
+    # STEP 8: Configure gradle.properties
     ############################################################################
     - name: ⚙️ Configure gradle.properties
       run: |
@@ -264,25 +224,18 @@ EOF
         echo "Configuring Gradle properties"
         echo "==================================="
         
-        # Backup original if exists
         if [ -f gradle.properties ]; then
           cp gradle.properties gradle.properties.backup
         fi
         
-        # Add/update gradle properties
-        cat >> gradle.properties << EOF
-
-# CI/CD Optimizations
-org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError
-org.gradle.parallel=false
-org.gradle.daemon=false
-org.gradle.configureondemand=false
-
-# Android build optimizations
-android.useAndroidX=true
-android.enableJetifier=false
-android.builder.sdkDownload=false
-EOF
+        echo "" >> gradle.properties
+        echo "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError" >> gradle.properties
+        echo "org.gradle.parallel=false" >> gradle.properties
+        echo "org.gradle.daemon=false" >> gradle.properties
+        echo "org.gradle.configureondemand=false" >> gradle.properties
+        echo "android.useAndroidX=true" >> gradle.properties
+        echo "android.enableJetifier=false" >> gradle.properties
+        echo "android.builder.sdkDownload=false" >> gradle.properties
         
         echo ""
         echo "gradle.properties updated:"
@@ -290,8 +243,7 @@ EOF
         echo ""
         
     ############################################################################
-    # STEP 9: Update Gradle wrapper to compatible version
-    # The project has wrapper 7.5, we'll ensure it's properly set up
+    # STEP 9: Setup Gradle wrapper
     ############################################################################
     - name: 🔄 Verify and update Gradle wrapper
       run: |
@@ -299,10 +251,8 @@ EOF
         echo "Setting up Gradle wrapper"
         echo "==================================="
         
-        # Make gradlew executable
         chmod +x gradlew
         
-        # Show current wrapper version
         echo "Current Gradle wrapper:"
         cat gradle/wrapper/gradle-wrapper.properties | grep distributionUrl || echo "No distribution URL found"
         
@@ -310,8 +260,7 @@ EOF
         echo "Gradle wrapper is ready"
         
     ############################################################################
-    # STEP 10: Clean any previous build artifacts
-    # Ensures a fresh build without cached issues
+    # STEP 10: Clean build
     ############################################################################
     - name: 🧹 Clean previous build artifacts
       run: |
@@ -319,19 +268,12 @@ EOF
         echo "Cleaning previous builds"
         echo "==================================="
         
-        ./gradlew clean --no-daemon --stacktrace || {
-          echo "⚠️ Clean failed, but continuing..."
-          rm -rf build/
-          rm -rf tun2socks/build/
-          rm -rf .gradle/
-          exit 0
-        }
+        ./gradlew clean --no-daemon --stacktrace || echo "Clean failed but continuing" && rm -rf build/ && rm -rf tun2socks/build/ && rm -rf .gradle/
         
-        echo "✅ Clean complete"
+        echo "Clean complete"
         
     ############################################################################
-    # STEP 11: Test Gradle configuration
-    # Verify that Gradle can read the project before building
+    # STEP 11: Test configuration
     ############################################################################
     - name: 🔍 Test Gradle configuration
       run: |
@@ -339,22 +281,12 @@ EOF
         echo "Testing Gradle configuration"
         echo "==================================="
         
-        ./gradlew tasks --no-daemon --stacktrace || {
-          echo "❌ Gradle configuration failed!"
-          echo ""
-          echo "Attempting to diagnose issues..."
-          echo ""
-          echo "Project structure:"
-          find . -name "build.gradle*" -type f
-          echo ""
-          exit 1
-        }
+        ./gradlew tasks --no-daemon --stacktrace || echo "Configuration test failed" && echo "" && echo "Attempting to diagnose issues..." && echo "" && echo "Project structure:" && find . -name "build.gradle*" -type f && echo "" && exit 1
         
-        echo "✅ Gradle configuration successful"
+        echo "Gradle configuration successful"
         
     ############################################################################
-    # STEP 12: Build the AAR file
-    # This is the main build step that compiles native code and packages AAR
+    # STEP 12: Build AAR
     ############################################################################
     - name: 🏗️ Build AAR file
       id: build_aar
@@ -363,67 +295,18 @@ EOF
         echo "Building tun2socks AAR"
         echo "==================================="
         
-        # Enable debug output if requested
         DEBUG_FLAGS=""
         if [ "${{ github.event.inputs.debug_mode }}" = "true" ]; then
           DEBUG_FLAGS="--debug"
         fi
         
-        # Build with comprehensive logging
-        ./gradlew tun2socks:assembleRelease \
-          --no-daemon \
-          --stacktrace \
-          --info \
-          $DEBUG_FLAGS || {
-          
-          echo ""
-          echo "❌ Build failed! Attempting recovery..."
-          echo ""
-          
-          # Try without info logging
-          echo "Retry 1: Building without verbose logging..."
-          ./gradlew tun2socks:assembleRelease \
-            --no-daemon \
-            --stacktrace || {
-            
-            echo ""
-            echo "❌ Retry 1 failed! Trying with refresh dependencies..."
-            echo ""
-            
-            # Try with refresh
-            ./gradlew tun2socks:assembleRelease \
-              --no-daemon \
-              --stacktrace \
-              --refresh-dependencies || {
-              
-              echo ""
-              echo "❌ All build attempts failed!"
-              echo ""
-              echo "Collecting diagnostic information..."
-              echo ""
-              echo "Java version:"
-              java -version
-              echo ""
-              echo "Gradle version:"
-              ./gradlew --version
-              echo ""
-              echo "Environment variables:"
-              env | grep -E "(JAVA|ANDROID|NDK|CMAKE)" || true
-              echo ""
-              echo "Build output structure:"
-              find . -type d -name "build" 2>/dev/null || true
-              echo ""
-              exit 1
-            }
-          }
-        }
+        ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace --info $DEBUG_FLAGS || echo "" && echo "Build failed! Attempting recovery..." && echo "" && echo "Retry 1: Building without verbose logging..." && ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace || echo "" && echo "Retry 1 failed! Trying with refresh dependencies..." && echo "" && ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace --refresh-dependencies || echo "" && echo "All build attempts failed!" && echo "" && echo "Collecting diagnostic information..." && echo "" && echo "Java version:" && java -version && echo "" && echo "Gradle version:" && ./gradlew --version && echo "" && echo "Environment variables:" && env | grep -E "(JAVA|ANDROID|NDK|CMAKE)" || true && echo "" && echo "Build output structure:" && find . -type d -name "build" 2>/dev/null || true && echo "" && exit 1
         
         echo ""
-        echo "✅ Build completed successfully!"
+        echo "Build completed successfully!"
         
     ############################################################################
-    # STEP 13: Verify build output
-    # Check that the AAR file was actually created
+    # STEP 13: Verify build
     ############################################################################
     - name: ✅ Verify AAR file creation
       run: |
@@ -431,12 +314,11 @@ EOF
         echo "Verifying build output"
         echo "==================================="
         
-        # Find all AAR files
         echo "Searching for AAR files..."
         AAR_FILES=$(find . -name "*.aar" -type f)
         
         if [ -z "$AAR_FILES" ]; then
-          echo "❌ No AAR files found!"
+          echo "No AAR files found!"
           echo ""
           echo "Build output directory structure:"
           find tun2socks/build -type f 2>/dev/null || echo "Build directory not found"
@@ -444,22 +326,19 @@ EOF
         fi
         
         echo ""
-        echo "✅ AAR files found:"
+        echo "AAR files found:"
         echo "$AAR_FILES"
         
-        # Show file details
         echo ""
         echo "File details:"
         find . -name "*.aar" -type f -exec ls -lh {} \;
         
-        # Find native libraries
         echo ""
         echo "Native libraries:"
         find . -path "*/stripped_native_libs/*/lib/*" -name "*.so" 2>/dev/null | head -20 || echo "No SO files found"
         
     ############################################################################
-    # STEP 14: Create comprehensive build information
-    # This helps with debugging and provides build details
+    # STEP 14: Create build info
     ############################################################################
     - name: 📄 Create detailed build information
       run: |
@@ -467,66 +346,65 @@ EOF
         echo "Creating build information"
         echo "==================================="
         
-        cat > build-info.txt << EOF
-╔══════════════════════════════════════════════════════════════════╗
-║              TUN2SOCKS ANDROID AAR BUILD REPORT                  ║
-╚══════════════════════════════════════════════════════════════════╝
-
-BUILD STATUS: ✅ SUCCESS
-
-BUILD INFORMATION:
-- Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-- Repository: LondonX/tun2socks-android
-- Commit SHA: ${{ github.sha }}
-- Workflow Run: ${{ github.run_number }}
-- Triggered By: ${{ github.event_name }}
-
-ENVIRONMENT:
-- Runner OS: $(uname -s) $(uname -r)
-- Java Version: $(java -version 2>&1 | head -1)
-- Gradle Version: $(./gradlew --version | grep Gradle || echo "Unknown")
-- Android SDK: $ANDROID_SDK_ROOT
-- NDK Path: $ANDROID_NDK_HOME
-- CMake: ${CMAKE_DIR:-System CMake}
-
-AAR FILES GENERATED:
-$(find . -name "*.aar" -type f -exec basename {} \;)
-
-NATIVE LIBRARIES (ABIs):
-$(find . -path "*/stripped_native_libs/*/lib/*" -type d 2>/dev/null | grep -o '[^/]*$' | sort -u || echo "Not found")
-
-FILE SIZES:
-$(find . -name "*.aar" -type f -exec du -h {} \;)
-
-USAGE INSTRUCTIONS:
-1. Download the 'tun2socks-aar' artifact from this workflow run
-2. Extract the AAR file
-3. Add to your Android project's libs/ folder
-4. Add to build.gradle: implementation files('libs/tun2socks-release.aar')
-5. For Flutter: Follow the README instructions in the repository
-
-NATIVE LIBRARIES:
-The 'tun2socks-native-libs' artifact contains SO files for:
-- arm64-v8a (64-bit ARM)
-- armeabi-v7a (32-bit ARM)
-- x86 (32-bit x86)
-- x86_64 (64-bit x86)
-
-TROUBLESHOOTING:
-- If integration fails, check NDK version compatibility
-- Ensure minSdkVersion matches (check module build.gradle)
-- For Flutter, copy Java files as per repository README
-
-╔══════════════════════════════════════════════════════════════════╗
-║                    BUILD COMPLETED SUCCESSFULLY                   ║
-╚══════════════════════════════════════════════════════════════════╝
-EOF
+        {
+          echo "========================================================================"
+          echo "              TUN2SOCKS ANDROID AAR BUILD REPORT"
+          echo "========================================================================"
+          echo ""
+          echo "BUILD STATUS: SUCCESS"
+          echo ""
+          echo "BUILD INFORMATION:"
+          echo "- Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "- Repository: LondonX/tun2socks-android"
+          echo "- Commit SHA: ${{ github.sha }}"
+          echo "- Workflow Run: ${{ github.run_number }}"
+          echo "- Triggered By: ${{ github.event_name }}"
+          echo ""
+          echo "ENVIRONMENT:"
+          echo "- Runner OS: $(uname -s) $(uname -r)"
+          echo "- Java Version: $(java -version 2>&1 | head -1)"
+          echo "- Gradle Version: $(./gradlew --version | grep Gradle || echo 'Unknown')"
+          echo "- Android SDK: $ANDROID_SDK_ROOT"
+          echo "- NDK Path: $ANDROID_NDK_HOME"
+          echo "- CMake: ${CMAKE_DIR:-System CMake}"
+          echo ""
+          echo "AAR FILES GENERATED:"
+          find . -name "*.aar" -type f -exec basename {} \;
+          echo ""
+          echo "NATIVE LIBRARIES (ABIs):"
+          find . -path "*/stripped_native_libs/*/lib/*" -type d 2>/dev/null | grep -o '[^/]*$' | sort -u || echo "Not found"
+          echo ""
+          echo "FILE SIZES:"
+          find . -name "*.aar" -type f -exec du -h {} \;
+          echo ""
+          echo "USAGE INSTRUCTIONS:"
+          echo "1. Download the 'tun2socks-aar' artifact from this workflow run"
+          echo "2. Extract the AAR file"
+          echo "3. Add to your Android project's libs/ folder"
+          echo "4. Add to build.gradle: implementation files('libs/tun2socks-release.aar')"
+          echo "5. For Flutter: Follow the README instructions in the repository"
+          echo ""
+          echo "NATIVE LIBRARIES:"
+          echo "The 'tun2socks-native-libs' artifact contains SO files for:"
+          echo "- arm64-v8a (64-bit ARM)"
+          echo "- armeabi-v7a (32-bit ARM)"
+          echo "- x86 (32-bit x86)"
+          echo "- x86_64 (64-bit x86)"
+          echo ""
+          echo "TROUBLESHOOTING:"
+          echo "- If integration fails, check NDK version compatibility"
+          echo "- Ensure minSdkVersion matches (check module build.gradle)"
+          echo "- For Flutter, copy Java files as per repository README"
+          echo ""
+          echo "========================================================================"
+          echo "                    BUILD COMPLETED SUCCESSFULLY"
+          echo "========================================================================"
+        } > build-info.txt
         
         cat build-info.txt
         
     ############################################################################
-    # STEP 15: Upload AAR artifact
-    # This is the main deliverable - the compiled AAR file
+    # STEP 15: Upload AAR
     ############################################################################
     - name: 📤 Upload AAR artifact
       uses: actions/upload-artifact@v4
@@ -534,13 +412,11 @@ EOF
         name: tun2socks-aar-${{ github.run_number }}
         path: |
           tun2socks/build/outputs/aar/*.aar
-          tun2socks/build/outputs/aar/*.aar.md5
         if-no-files-found: error
         retention-days: 90
         
     ############################################################################
-    # STEP 16: Upload native libraries (optional, for manual integration)
-    # Some users may want to manually integrate the SO files
+    # STEP 16: Upload native libraries
     ############################################################################
     - name: 📤 Upload native libraries
       uses: actions/upload-artifact@v4
@@ -551,8 +427,7 @@ EOF
         retention-days: 90
         
     ############################################################################
-    # STEP 17: Upload build information
-    # Provides context and instructions for using the build
+    # STEP 17: Upload build info
     ############################################################################
     - name: 📤 Upload build information
       uses: actions/upload-artifact@v4
@@ -562,8 +437,7 @@ EOF
         retention-days: 90
         
     ############################################################################
-    # STEP 18: Upload Java source files (for Flutter integration)
-    # Flutter users need the Java wrapper class
+    # STEP 18: Upload Java sources
     ############################################################################
     - name: 📤 Upload Java source for Flutter integration
       uses: actions/upload-artifact@v4
@@ -574,23 +448,23 @@ EOF
         retention-days: 90
         
     ############################################################################
-    # FINAL STEP: Success summary
+    # FINAL: Success summary
     ############################################################################
     - name: 🎉 Build Summary
       run: |
         echo ""
-        echo "╔══════════════════════════════════════════════════════════════════╗"
-        echo "║                  BUILD COMPLETED SUCCESSFULLY!                    ║"
-        echo "╚══════════════════════════════════════════════════════════════════╝"
+        echo "========================================================================"
+        echo "                  BUILD COMPLETED SUCCESSFULLY!"
+        echo "========================================================================"
         echo ""
-        echo "✅ AAR file built and uploaded"
-        echo "✅ Native libraries extracted"
-        echo "✅ Build information generated"
-        echo "✅ Java sources packaged for Flutter"
+        echo "AAR file built and uploaded"
+        echo "Native libraries extracted"
+        echo "Build information generated"
+        echo "Java sources packaged for Flutter"
         echo ""
-        echo "📦 Download artifacts from the Actions tab above"
+        echo "Download artifacts from the Actions tab above"
         echo ""
         echo "Main artifact: tun2socks-aar-${{ github.run_number }}"
         echo ""
-        echo "Happy coding! 🚀"
+        echo "Happy coding!"
         echo ""
