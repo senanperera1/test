@@ -1,4 +1,4 @@
-name: Build LondonX tun2socks AAR (fixed)
+name: Build LondonX tun2socks AAR (fixed android setup)
 
 on:
   workflow_dispatch:
@@ -9,11 +9,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      ANDROID_API_LEVEL: 35
-      ANDROID_NDK_VERSION: 27.0.12077973
       UPSTREAM_REPO: LondonX/tun2socks-android
       UPSTREAM_BRANCH: main
       UPSTREAM_DIR: upstream-tun2socks
+      ANDROID_API: 33
+      ANDROID_NDK_VERSION: 27.0.12077973
 
     steps:
       - name: Checkout this repository (workflow files)
@@ -33,107 +33,63 @@ jobs:
         run: |
           echo "=== upstream dir: ${{ env.UPSTREAM_DIR }} ==="
           ls -la "${{ env.UPSTREAM_DIR }}" || true
-          find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f \( -name gradlew -o -name settings.gradle -o -name build.gradle -o -name build.gradle.kts \) -print || true
+          find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f \( -name gradlew -o -name settings.gradle -o -name build.gradle \) -print || true
 
-      - name: Set up Java (JDK 11)
+      - name: Set up Java (JDK 17)
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '11'
+          java-version: '17'
 
-      - name: Setup Android SDK and NDK
+      - name: Setup Android SDK and NDK (install packages)
         uses: android-actions/setup-android@v3
         with:
-          api-level: ${{ env.ANDROID_API_LEVEL }}
-          ndk: ${{ env.ANDROID_NDK_VERSION }}
+          # install commandline tools + platform + build-tools + specific NDK
+          packages: |
+            cmdline-tools;latest
+            platform-tools
+            platforms;android-${{ env.ANDROID_API }}
+            build-tools;33.0.2
+            ndk;${{ env.ANDROID_NDK_VERSION }}
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses || true
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-cache-${{ runner.os }}-${{ hashFiles(format('{0}/**/gradle-wrapper.properties', env.UPSTREAM_DIR)) }}
-          restore-keys: |
-            gradle-cache-${{ runner.os }}-
 
       - name: Make upstream gradlew executable
         run: |
           GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 2 -type f -name gradlew | head -n 1 || true)
           if [ -n "$GW" ]; then
-            echo "Found gradlew at: $GW"
             chmod +x "$GW"
+            echo "Found gradlew: $GW"
           else
-            echo "No gradlew found in upstream; aborting"
+            echo "gradlew not found in upstream repo; aborting"
             exit 1
           fi
 
-      - name: Show Java and Gradle info
-        run: |
-          java -version || true
-          echo "Listing gradle-wrapper.properties:"
-          find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f -name 'gradle-wrapper.properties' -print -exec sed -n '1,120p' {} \; || true
-
-      - name: Build :tun2socks:assembleRelease (wrapper, verbose)
+      - name: Build :tun2socks:assembleRelease (wrapper)
         run: |
           set -euo pipefail
-          # Use runner runtime temp for gradle user home to avoid permission issues
           export GRADLE_USER_HOME="$RUNNER_TEMP/gradle-cache"
           mkdir -p "$GRADLE_USER_HOME"
-          echo "GRADLE_USER_HOME=$GRADLE_USER_HOME"
-
           UP="${{ env.UPSTREAM_DIR }}"
           GW=$(find "$UP" -maxdepth 2 -type f -name gradlew | head -n 1)
-          if [ -z "$GW" ]; then
-            echo "gradlew not found; aborting"
-            exit 1
-          fi
           GW_DIR=$(dirname "$GW")
-          echo "Running gradlew in $GW_DIR"
           pushd "$GW_DIR"
-
           ./gradlew --version
           ./gradlew clean --no-daemon --warning-mode all --stacktrace || true
-
-          ./gradlew :tun2socks:assembleRelease --no-daemon --warning-mode all --stacktrace --info || {
-            echo "Gradle build failed. Collecting debug info..."
-            echo "=== Last 200 lines of gradle daemon logs (if any) ==="
-            ls -la ~/.gradle/daemon || true
-            tail -n 200 ~/.gradle/daemon/*/daemon-*.log || true
-            echo "=== Show tun2socks module build.gradle ==="
-            sed -n '1,240p' tun2socks/build.gradle || true
-            echo "=== Show project build.gradle ==="
-            sed -n '1,240p' build.gradle || true
-            popd
-            exit 1
-          }
-
+          ./gradlew :tun2socks:assembleRelease --no-daemon --warning-mode all --stacktrace --info
           popd
-          echo "Gradle build finished (success)."
 
       - name: Collect AARs and native libs
         run: |
           mkdir -p build/outputs
           find "${{ env.UPSTREAM_DIR }}" -type f -name "*.aar" -exec cp {} build/outputs/ \; || true
-
           STRIPPED_DIR="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/stripped_native_libs/release/out/lib"
           if [ -d "$STRIPPED_DIR" ]; then
-            echo "Copying stripped native libs from $STRIPPED_DIR"
             mkdir -p build/outputs/jniLibs
             cp -r "$STRIPPED_DIR"/* build/outputs/jniLibs/ || true
-          else
-            echo "No stripped native libs found at $STRIPPED_DIR (path may differ)"
           fi
-
-          echo "=== build/outputs contents ==="
           ls -la build/outputs || true
-          if [ -d build/outputs/jniLibs ]; then
-            echo "=== jniLibs contents ==="
-            find build/outputs/jniLibs -maxdepth 3 -type f -print || true
-          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -151,5 +107,7 @@ jobs:
           ls -la "${{ env.UPSTREAM_DIR }}" || true
           echo "=== Find build.gradle files ==="
           find "${{ env.UPSTREAM_DIR }}" -maxdepth 4 -type f -name 'build.gradle*' -print || true
-          echo "=== Show first 200 lines of tun2socks/build.gradle ==="
-          if [ -f "${{ env.UPSTREAM_DIR }}/tun2socks/build.gradle" ]; then sed -n '1,200p' "${{ env.UPSTREAM_DIR }}/tun2socks/build.gradle" || true; else echo "no tun2socks/build.gradle"; fi
+          if [ -f "${{ env.UPSTREAM_DIR }}/tun2socks/build.gradle" ]; then
+            echo "=== tun2socks/build.gradle (head) ==="
+            sed -n '1,200p' "${{ env.UPSTREAM_DIR }}/tun2socks/build.gradle" || true
+          fi
