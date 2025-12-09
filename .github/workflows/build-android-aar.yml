@@ -50,7 +50,9 @@ jobs:
     - name: Initialize gomobile with NDK r27
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
-        gomobile init -ndk $ANDROID_NDK_HOME
+        # Modern gomobile doesn't use -ndk flag, just set env vars
+        export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
+        gomobile init
     
     - name: Patch for 16KB Page Size
       run: |
