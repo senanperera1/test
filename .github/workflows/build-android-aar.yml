@@ -1,19 +1,13 @@
-name: Build tun2socks AAR
+name: Build tun2socks AAR (external clone)
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
+  workflow_dispatch:
 
 jobs:
-  build:
+  build-aar:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Set up JDK 11
         uses: actions/setup-java@v3
         with:
@@ -21,14 +15,23 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      - name: Install required packages
+        run: sudo apt-get update
+
+      - name: Clone external tun2socks-android repo
+        run: |
+          git clone https://github.com/LondonX/tun2socks-android.git
+          ls -R tun2socks-android
+
       - name: Make gradlew executable
-        run: chmod +x gradlew
+        run: chmod +x tun2socks-android/gradlew
 
       - name: Build Release AAR
+        working-directory: tun2socks-android
         run: ./gradlew tun2socks:assembleRelease
 
       - name: Upload AAR artifact
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-aar
-          path: tun2socks/build/outputs/aar/*.aar
+          path: tun2socks-android/tun2socks/build/outputs/aar/*.aar
