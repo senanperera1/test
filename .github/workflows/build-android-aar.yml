@@ -11,18 +11,22 @@ jobs:
 
     steps:
       # 1. Checkout repo
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Setup JDK 17+ (Gradle requires recent Java)
+      # 2. Clone tun2socks-android
+      - name: Clone tun2socks-android
+        run: git clone https://github.com/LondonX/tun2socks-android.git
+
+      # 3. Set up JDK 17+
       - name: Set up JDK
         uses: actions/setup-java@v3
         with:
           distribution: temurin
           java-version: 17
 
-      # 3. Install Android SDK + NDK + CMake
-      - name: Setup Android SDK + NDK + CMake
+      # 4. Install Android SDK + NDK + CMake
+      - name: Setup Android SDK, NDK, CMake
         uses: android-actions/setup-android@v3
         with:
           api-level: 33
@@ -30,17 +34,18 @@ jobs:
           cmake: 3.10.2
           build-tools: 33.0.2
 
-      # 4. Make Gradle wrapper executable
-      - name: Make Gradle executable
-        run: chmod +x gradlew
+      # 5. Make Gradle wrapper executable
+      - name: Make Gradle wrapper executable
+        run: chmod +x tun2socks-android/gradlew
 
-      # 5. Build release AAR
+      # 6. Build the release AAR
       - name: Build tun2socks Release AAR
+        working-directory: tun2socks-android
         run: ./gradlew tun2socks:assembleRelease --stacktrace
 
-      # 6. Upload final AAR artifact
+      # 7. Upload the final AAR artifact
       - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-aar
-          path: tun2socks/build/outputs/aar/*.aar
+          path: tun2socks-android/tun2socks/build/outputs/aar/*.aar
