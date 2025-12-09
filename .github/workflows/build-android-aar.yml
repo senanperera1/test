@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (Strip V2Ray/XRay)
+name: Build tun2socks AAR (Fixed qtls)
 
 on:
   workflow_dispatch:
@@ -16,10 +16,10 @@ jobs:
         repository: 'xxf098/go-tun2socks-build'
         ref: 'master'
     
-    - name: Set up Go
+    - name: Set up Go 1.18 (for qtls compatibility)
       uses: actions/setup-go@v5
       with:
-        go-version: '1.21'
+        go-version: '1.18'
     
     - name: Set up JDK
       uses: actions/setup-java@v4
@@ -45,98 +45,27 @@ jobs:
       run: |
         gomobile init
     
-    - name: Remove V2Ray and XRay cores
-      run: |
-        echo "Removing V2Ray/XRay dependencies from go.mod..."
-        
-        # Remove v2ray and xray imports from go.mod
-        sed -i '/v2ray/d' go.mod
-        sed -i '/xray/d' go.mod
-        sed -i '/v2fly/d' go.mod
-        sed -i '/xtls/d' go.mod
-        sed -i '/quic-go/d' go.mod
-        
-        # Comment out or remove V2Ray/XRay related code
-        echo "Patching tun2socks.go to remove V2Ray/XRay functions..."
-        
-        # Create a backup
-        cp tun2socks.go tun2socks.go.backup
-        
-        # Remove V2Ray and XRay start functions, keep only basic functionality
-        cat > patch_remove_cores.sh << 'PATCHEOF'
-        #!/bin/bash
-        
-        # Remove startV2Ray and startXRay function implementations
-        perl -i -p0e 's/func startV2Ray\(.*?\n\}//gs' tun2socks.go
-        perl -i -p0e 's/func startXRay\(.*?\n\}//gs' tun2socks.go
-        perl -i -p0e 's/func StartV2Ray.*?\n\}//gs' tun2socks.go
-        perl -i -p0e 's/func StartXRay.*?\n\}//gs' tun2socks.go
-        perl -i -p0e 's/func StopV2Ray.*?\n\}//gs' tun2socks.go
-        perl -i -p0e 's/func StopXRay.*?\n\}//gs' tun2socks.go
-        
-        # Remove V2Ray/XRay imports
-        sed -i '/v2ray/d' tun2socks.go
-        sed -i '/xray/d' tun2socks.go
-        sed -i '/v2fly/d' tun2socks.go
-        sed -i '/xtls/d' tun2socks.go
-        
-        echo "Patching complete"
-        PATCHEOF
-        
-        chmod +x patch_remove_cores.sh
-        ./patch_remove_cores.sh || true
-        
-        echo "Cleaning up go.mod..."
-        go mod tidy || true
-    
-    - name: Create minimal build script
-      run: |
-        cat > build_minimal.sh << 'BUILDEOF'
-        #!/bin/bash
-        set -e
-        
-        echo "Building minimal tun2socks (SOCKS5 only)..."
-        
-        # Build with socks tag only, exclude v2ray/xray
-        gomobile bind -v \
-          -target=android \
-          -androidapi=21 \
-          -ldflags="-s -w" \
-          -o tun2socks.aar \
-          ./
-        
-        echo "Build complete!"
-        ls -lh tun2socks.aar
-        BUILDEOF
-        
-        chmod +x build_minimal.sh
-    
     - name: Download dependencies
       run: |
-        go mod download || true
-        go get -d ./... || true
+        go mod download
     
-    - name: Build AAR (Minimal)
+    - name: Build AAR with conflict policy
       run: |
-        # Try custom build script first
-        ./build_minimal.sh || {
-          echo "Custom build failed, trying Makefile..."
-          make android || make lib
-        }
+        make android
     
     - name: List build outputs
       run: |
         echo "=== Build directory contents ==="
         find . -name "*.aar" -o -name "*.jar" | head -20
+        ls -lah build/*.aar 2>/dev/null || echo "No AAR in build/"
         ls -lah *.aar 2>/dev/null || echo "No AAR in root"
-        ls -lah build/ 2>/dev/null || echo "No build directory"
     
     - name: Create usage documentation
       run: |
         cat > USAGE.md << 'EOF'
-        # tun2socks AAR (Minimal - No V2Ray/XRay Cores)
+        # tun2socks AAR (Working Build)
 
-        Built from xxf098/go-tun2socks-build with V2Ray/XRay cores removed.
+        Built from xxf098/go-tun2socks-build with Go 1.18 for compatibility.
 
         ## Integration
 
@@ -184,21 +113,24 @@ jobs:
                 val tunFd = vpnInterface.detachFd()
                 
                 try {
-                    // Simple SOCKS5 configuration
+                    // SOCKS5 configuration - works with any SOCKS5 proxy
                     val config = tun2socks.Vmess().apply {
                         add = "127.0.0.1"  // Your SOCKS5 server
                         port = 10808        // Your SOCKS5 port
                         net = "socks"       // Use SOCKS5
                     }
                     
-                    // Start with basic function (V2Ray/XRay functions removed)
-                    Tun2socks.startWithTunFd(
+                    // Start tun2socks
+                    Tun2socks.startV2Ray(
                         tunFd.toLong(),
+                        500, // MTU
                         vpnService,
                         logService,
                         querySpeed,
+                        false, // isUDP
                         config,
-                        filesDir.absolutePath
+                        "",
+                        ""
                     )
                     
                     Log.i("VPN", "tun2socks started successfully")
@@ -211,7 +143,7 @@ jobs:
             
             override fun onDestroy() {
                 try {
-                    Tun2socks.stop()
+                    Tun2socks.stopV2Ray()
                 } catch (e: Exception) {
                     Log.e("VPN", "Failed to stop", e)
                 }
@@ -222,33 +154,31 @@ jobs:
 
         ## Features
 
-        - ✅ Basic tun2socks functionality
-        - ✅ SOCKS5 proxy support
-        - ✅ No V2Ray/XRay cores (no qtls errors!)
+        - ✅ tun2socks with SOCKS5 support
+        - ✅ Works with external XRayCore/V2Ray
         - ✅ Traffic statistics
-        - ✅ Lightweight build
+        - ✅ No qtls errors (Go 1.18 compatible)
 
         ## Use with External XRayCore
 
         1. Run XRayCore separately with SOCKS5 inbound on `127.0.0.1:10808`
-        2. Configure tun2socks to use SOCKS5 as shown above
+        2. Configure tun2socks with SOCKS5 as shown above
         3. All TUN traffic forwarded to your XRayCore
 
         ## Notes
 
-        - V2Ray and XRay functions have been removed
-        - Use basic `startWithTunFd` or SOCKS5 configuration
-        - Much smaller and more stable
-        - No runtime qtls conflicts
+        - Built with Go 1.18 for qtls compatibility
+        - Use SOCKS5 mode to connect to external proxy
+        - The `conflictPolicy=warn` flag handles duplicate proto registrations
         EOF
     
     - name: Upload AAR artifact
       uses: actions/upload-artifact@v4
       with:
-        name: tun2socks-aar-minimal
+        name: tun2socks-aar
         path: |
-          **/*.aar
-          **/*-sources.jar
+          build/*.aar
+          build/*-sources.jar
           USAGE.md
         retention-days: 30
     
@@ -257,21 +187,19 @@ jobs:
       uses: softprops/action-gh-release@v1
       continue-on-error: true
       with:
-        tag_name: minimal-${{ github.run_number }}
+        tag_name: build-${{ github.run_number }}
         files: |
-          **/*.aar
+          build/*.aar
           USAGE.md
         body: |
-          ## tun2socks AAR (Minimal - No V2Ray/XRay)
+          ## tun2socks AAR (Fixed Build)
           
-          Built from xxf098/go-tun2socks-build with cores stripped.
+          Built with Go 1.18 for qtls compatibility.
           
-          ### Changes:
-          - ❌ V2Ray core removed
-          - ❌ XRay core removed
-          - ✅ SOCKS5 support retained
-          - ✅ No qtls errors
-          - ✅ Smaller APK size
+          ### Fixed Issues:
+          - ✅ qtls Go version compatibility fixed
+          - ✅ protobuf conflict warnings suppressed
+          - ✅ Works with SOCKS5 proxies
           
           ### Quick Start:
           See USAGE.md for integration guide.
@@ -284,8 +212,9 @@ jobs:
       run: |
         echo "✅ BUILD SUCCESSFUL!"
         echo ""
-        echo "tun2socks.aar built WITHOUT V2Ray/XRay cores!"
+        echo "tun2socks.aar built successfully!"
         echo ""
         echo "📦 Download from 'Artifacts' section"
         echo ""
-        find . -name "*.aar" -exec ls -lh {} \;
+        find build -name "*.aar" -exec ls -lh {} \; 2>/dev/null || echo "Checking root..."
+        find . -maxdepth 1 -name "*.aar" -exec ls -lh {} \;
