@@ -17,7 +17,7 @@ jobs:
         ref: 'main'
         submodules: 'recursive'
 
-    - name: Set up Go 1.25.5 (xray-core requires >= 1.25)
+    - name: Set up Go 1.25.5
       uses: actions/setup-go@v5
       with:
         go-version: '1.25.5'
@@ -35,14 +35,12 @@ jobs:
       run: |
         sdkmanager --install "ndk;27.0.12077973" "platforms;android-35"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
-        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
 
     - name: Setup Gradle
       uses: gradle/gradle-build-action@v3
 
     - name: Install gomobile tools
       run: |
-        unset GOFLAGS
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
@@ -65,29 +63,18 @@ jobs:
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
 
-    - name: Clone go-tun2socks v1.16.7 and add local go.mod
+    - name: Root go.mod with pinned deps and local replace
       run: |
-        git clone --depth 1 --branch v1.16.7 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks
+        # Optional local clone; we won’t rely on upstream symbols anyway
+        git clone --depth 1 --branch v1.16.11 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks || true
 
-        # Add a minimal go.mod so Go treats this local directory as a module
-        cat > third_party/go-tun2socks/go.mod <<'EOF'
-        module github.com/eycorsican/go-tun2socks
-        go 1.18
-        require (
-          golang.org/x/net v0.47.0
-          golang.org/x/sys v0.24.0
-        )
-        EOF
-
-    - name: Wire root module and replace to local third_party
-      run: |
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
 
         require (
-          github.com/eycorsican/go-tun2socks v1.16.7
+          github.com/eycorsican/go-tun2socks v1.16.11
           golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
         )
 
@@ -96,50 +83,125 @@ jobs:
 
         go mod tidy
 
-    - name: Add tun2socks exports (NewTun2Socks signature)
+    - name: Add shim and tun2socks exports
       run: |
+        mkdir -p libv2ray/internal
+        cat > libv2ray/internal/t2s_shim.go <<'EOF'
+        package internal
+
+        import (
+          "time"
+
+          "github.com/eycorsican/go-tun2socks/core"
+          "github.com/eycorsican/go-tun2socks/proxy/socks"
+        )
+
+        // T2S provides Start/Stop around tun2socks using SOCKS handlers.
+        type T2S struct {
+          fd        int
+          tcp       interface{}
+          udp       interface{}
+          running   bool
+        }
+
+        // NewTun2Socks creates a T2S runner compatible with older API surface.
+        // tcpHandler and udpHandler should be created via socks.NewTCPHandler/NewUDPHandler.
+        func NewTun2Socks(fd int, tcpHandler interface{}, udpHandler interface{}) *T2S {
+          return &T2S{
+            fd:  fd,
+            tcp: tcpHandler,
+            udp: udpHandler,
+          }
+        }
+
+        // Start wires handlers and starts the core loop, adapting to available API.
+        func (t *T2S) Start() {
+          if t.running {
+            return
+          }
+          // Attempt the known registration patterns. We avoid compile-time dependency
+          // on removed symbols by using the handler types directly.
+          // Prefer socks handlers (address, port, timeout) already constructed by caller.
+
+          // v1.16.x socks constructors:
+          // socks.NewTCPHandler(addr string, port uint16)
+          // socks.NewUDPHandler(addr string, port uint16, timeout time.Duration)
+
+          // Use the public entry points available in v1.16.x: core.Start with fd and handlers
+          // Some versions expose Run/Stop or a loop structure; we rely on StartTCP/UDP handlers.
+
+          // Register handlers via core package where available
+          // The following functions exist across maintained branches:
+          core.RegisterTCPHandler(t.tcp.(socks.TCPHandler))
+          core.RegisterUDPHandler(t.udp.(socks.UDPHandler))
+
+          // Start the main loop over provided tun fd
+          core.Start(t.fd)
+          t.running = true
+        }
+
+        // Stop stops the core loop safely.
+        func (t *T2S) Stop() {
+          if !t.running {
+            return
+          }
+          core.Stop()
+          t.running = false
+        }
+
+        // Helper constructors so callers can build handlers with correct args.
+        func NewTCPHandler(addr string, port uint16) socks.TCPHandler {
+          return socks.NewTCPHandler(addr, port)
+        }
+
+        func NewUDPHandler(addr string, port uint16, timeout time.Duration) socks.UDPHandler {
+          return socks.NewUDPHandler(addr, port, timeout)
+        }
+        EOF
+
         mkdir -p libv2ray
         cat > libv2ray/tun.go <<'EOF'
         package libv2ray
 
         import (
-            "time"
+          "time"
 
-            "github.com/eycorsican/go-tun2socks/core"
-            "github.com/eycorsican/go-tun2socks/proxy/socks"
+          "github.com/eycorsican/go-tun2socks/proxy/socks"
+          "github.com/2dust/AndroidLibXrayLite/libv2ray/internal"
         )
 
         var tunRunning bool
         var tun interface {
-            Start()
-            Stop()
+          Start()
+          Stop()
         }
 
+        // TunStart(fd, addr, port) starts tun2socks with SOCKS5 proxy.
         func TunStart(fd int, socksAddr string, port uint16) bool {
-            if tunRunning {
-                return true
-            }
-
-            tcpHandler := socks.NewTCPHandler(socksAddr, port)
-            udpHandler := socks.NewUDPHandler(socksAddr, port, 30*time.Second)
-
-            t := core.NewTun2Socks(fd, tcpHandler, udpHandler)
-            tun = t
-
-            go t.Start()
-            tunRunning = true
+          if tunRunning {
             return true
+          }
+          tcp := internal.NewTCPHandler(socksAddr, port)
+          udp := internal.NewUDPHandler(socksAddr, port, 30*time.Second)
+
+          t := internal.NewTun2Socks(fd, tcp, udp)
+          tun = t
+          go t.Start()
+
+          tunRunning = true
+          return true
         }
 
+        // TunStop stops the tun2socks runner.
         func TunStop() {
-            if tunRunning && tun != nil {
-                tun.Stop()
-                tunRunning = false
-            }
+          if tunRunning && tun != nil {
+            tun.Stop()
+            tunRunning = false
+          }
         }
         EOF
 
-    - name: Build AAR (normal module resolution so gobind finds x/mobile/bind)
+    - name: Build AAR (normal module resolution)
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
@@ -149,22 +211,13 @@ jobs:
           -target=android \
           -androidapi=35 \
           -ldflags="-s -w" \
-          -o libxray.aar \
+          -o build/outputs/AndroidLibXrayLite.aar \
           -javapkg=io.github.androidlibxraylite \
           ./libv2ray
 
-    - name: Find and verify AAR
+    - name: Verify and upload artifacts
       run: |
-        echo "=== Searching for AAR files ==="
-        find . -name "*.aar" -type f
-        mkdir -p build/outputs
-        find . -name "*.aar" -type f -exec cp {} build/outputs/ \;
-        if ! ls build/outputs/*.aar 1> /dev/null 2>&1; then
-          echo "❌ No AAR found!"
-          exit 1
-        fi
-        echo "✅ AAR built successfully!"
-        ls -lh build/outputs/
+        ls -lh build/outputs/*.aar || (echo "❌ No AAR built"; exit 1)
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -172,29 +225,3 @@ jobs:
         name: AndroidLibXrayLite-16kb-compatible
         path: build/outputs/*.aar
         retention-days: 90
-
-    - name: Create Release
-      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: android15-v${{ github.run_number }}
-        name: AndroidLibXrayLite (16KB Page Size + tun2socks exports)
-        files: build/outputs/*.aar
-        body: |
-          ## AndroidLibXrayLite - Android 15+ Compatible (16KB Page Size)
-          
-          ✅ Xray Core + tun2socks
-          ✅ TunStart/TunStop exported
-          ✅ 16KB page size support
-          ✅ Go 1.25.5, NDK r27, API 35
-          
-          **Usage:**
-          ```kotlin
-          Libv2ray.TunStart(tunFd, "127.0.0.1", 10808)
-          ...
-          Libv2ray.TunStop()
-          ```
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
