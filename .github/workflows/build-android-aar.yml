@@ -1,4 +1,4 @@
-name: Build tun2socks-android AAR
+name: Build Android AAR (Gradle or gomobile)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ jobs:
     env:
       ANDROID_API_LEVEL: 35
       ANDROID_NDK_VERSION: 27.0.12077973
+      GO_VERSION: 1.25.5
 
     steps:
       - name: Checkout repository
@@ -18,6 +19,11 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Set up Java (JDK 17)
         uses: actions/setup-java@v4
@@ -35,45 +41,128 @@ jobs:
         run: |
           yes | sdkmanager --licenses || true
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-cache-${{ runner.os }}-
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Clean build directory
-        run: ./gradlew clean --no-daemon
-
-      - name: Build AAR (assembleRelease)
+      - name: Install gomobile and gobind
         run: |
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          unset GOFLAGS || true
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Collect AAR artifacts
+      - name: Initialize gomobile (safe to run even if not used)
         run: |
-          mkdir -p build/outputs
-          find . -type f -name "*.aar" -exec cp {} build/outputs/ \; || true
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
+          gomobile init
+
+      - name: Locate Gradle wrapper (if any)
+        id: find_gradlew
+        run: |
+          # find gradlew up to 4 levels deep
+          GRADLEW_PATH=$(find . -maxdepth 4 -type f -name gradlew | head -n 1 || true)
+          if [ -n "$GRADLEW_PATH" ]; then
+            echo "Found gradlew at: $GRADLEW_PATH"
+            chmod +x "$GRADLEW_PATH"
+            GRADLEW_DIR=$(dirname "$GRADLEW_PATH")
+            echo "GRADLEW_DIR=$GRADLEW_DIR" >> $GITHUB_ENV
+          else
+            echo "GRADLEW_DIR=" >> $GITHUB_ENV
+            echo "No gradlew found"
+          fi
+
+      - name: Prepare outputs dir
+        run: mkdir -p build/outputs
+
+      - name: Build (Gradle assembleRelease or gomobile bind)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_VERSION }}
+        run: |
+          set -euo pipefail
+
+          # Helper to copy any produced AARs into build/outputs
+          copy_aars() {
+            find . -type f -name "*.aar" -print0 | xargs -0 -I{} bash -c 'cp "{}" build/outputs/ || true'
+          }
+
+          # 1) If a Gradle wrapper was found, prefer using it
+          if [ -n "${GRADLEW_DIR}" ]; then
+            echo "Using Gradle wrapper in ${GRADLEW_DIR}"
+            pushd "${GRADLEW_DIR}"
+            ./gradlew clean --no-daemon --stacktrace || true
+            # Try assembleRelease for library modules; if module name differs, user must adjust
+            ./gradlew assembleRelease --no-daemon --stacktrace || {
+              echo "Gradle assembleRelease failed; attempting to list tasks for debugging"
+              ./gradlew tasks --all --no-daemon || true
+              popd
+              copy_aars
+              exit 1
+            }
+            popd
+            copy_aars
+            echo "Gradle build finished. AARs (if any) copied to build/outputs"
+            exit 0
+          fi
+
+          # 2) If no gradlew, but a Go package libv2ray exists, try gomobile bind
+          if [ -d "./libv2ray" ] || [ -f "./libv2ray/tun.go" ]; then
+            echo "Detected libv2ray Go package; attempting gomobile bind"
+            export PATH="$(go env GOPATH)/bin:$PATH"
+            export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
+            export GO111MODULE=on
+
+            # Ensure modules tidy
+            go mod tidy || true
+
+            # Try to build with gomobile bind
+            gomobile bind -v -target=android -androidapi=${{ env.ANDROID_API_LEVEL }} -o build/outputs/AndroidLibXrayLite.aar ./libv2ray || {
+              echo "gomobile bind failed; printing go build errors for libv2ray"
+              go build -v ./libv2ray 2>&1 | sed -n '1,200p' || true
+              copy_aars
+              exit 1
+            }
+
+            echo "gomobile bind succeeded; AAR at build/outputs/AndroidLibXrayLite.aar"
+            copy_aars
+            exit 0
+          fi
+
+          # 3) No gradlew and no libv2ray: try system gradle (requires setup-gradle)
+          echo "No gradlew and no libv2ray detected. Attempting system gradle (may fail if not installed)."
+          if command -v gradle >/dev/null 2>&1; then
+            gradle assembleRelease --no-daemon --stacktrace || {
+              echo "System gradle build failed"
+              copy_aars
+              exit 1
+            }
+            copy_aars
+            exit 0
+          fi
+
+          echo "No build method succeeded: no gradlew found, no libv2ray package, and system gradle not available."
+          echo "Please ensure your repository contains an Android Gradle project (with gradlew) or a Go package (libv2ray) for gomobile."
+          exit 1
+
+      - name: List produced artifacts
+        if: always()
+        run: |
+          echo "=== build/outputs contents ==="
           ls -la build/outputs || true
 
-      - name: Upload AAR artifact
+      - name: Upload AAR artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-android-aar
+          name: android-aar-artifacts
           path: build/outputs/*.aar
           retention-days: 90
 
       - name: Debug info on failure
         if: failure()
         run: |
-          echo "=== Gradle daemon logs (tail) ==="
-          tail -n 200 ~/.gradle/daemon/*/daemon-*.log || true
-          echo "=== Project build files ==="
-          find . -maxdepth 3 -type f -name 'build.gradle*' -print
-          echo "=== Gradle tasks ==="
-          ./gradlew tasks --all --no-daemon || true
+          echo "=== Repo top-level files ==="
+          ls -la
+          echo "=== Find gradlew ==="
+          find . -maxdepth 4 -type f -name gradlew -print || true
+          echo "=== Show go.mod (if present) ==="
+          if [ -f go.mod ]; then sed -n '1,200p' go.mod || true; else echo "no go.mod"; fi
+          echo "=== Show build.gradle files ==="
+          find . -maxdepth 4 -type f -name 'build.gradle*' -print || true
