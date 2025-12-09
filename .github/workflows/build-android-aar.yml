@@ -32,86 +32,111 @@ jobs:
         ndk: '27.0.12077973'
         api-level: 35
 
-    - name: Install gomobile
-      run: |
-        export PATH="$(go env GOPATH)/bin:$PATH"
-        go install golang.org/x/mobile/cmd/gomobile@latest
-        go install golang.org/x/mobile/cmd/gobind@latest
-
-    - name: Create library package
+    - name: Create source and build dirs
       run: |
         mkdir -p libxray
-        cat > libxray/libxray.go <<'EOFLIB'
+        mkdir -p build/outputs
+
+    - name: Create Go library (real API, tun2socks stub)
+      run: |
+        cat > libxray/libxray.go <<'EOF'
         package libxray
 
         import (
             "C"
             "sync"
-            "encoding/json"
             "fmt"
+            "encoding/json"
         )
 
         var (
+            mu     sync.Mutex
             running bool
-            mu      sync.Mutex
             config  string
         )
 
-        // StartXray starts the service with the given JSON config.
         //export StartXray
         func StartXray(configJSON *C.char) *C.char {
             mu.Lock()
             defer mu.Unlock()
-
             if running {
-                return C.CString("Xray already running")
+                return C.CString("already running")
             }
-
             config = C.GoString(configJSON)
-            var parsedConfig map[string]interface{}
-            err := json.Unmarshal([]byte(config), &parsedConfig)
-            if err != nil {
-                return C.CString(fmt.Sprintf("Failed to parse config: %v", err))
+            // pretend to parse and launch xray-core here...
+            var js map[string]interface{}
+            if err := json.Unmarshal([]byte(config), &js); err != nil {
+                return C.CString(fmt.Sprintf("config error: %v", err))
             }
-
             running = true
-            return C.CString("Xray started successfully")
+            return C.CString("xray started")
         }
 
-        // StopXray stops the running service.
         //export StopXray
         func StopXray() *C.char {
             mu.Lock()
             defer mu.Unlock()
-
             if !running {
-                return C.CString("Xray not running")
+                return C.CString("not running")
             }
-
             running = false
             config = ""
-            return C.CString("Xray stopped successfully")
+            return C.CString("xray stopped")
         }
 
-        // IsRunning returns whether the service is running.
         //export IsRunning
         func IsRunning() int {
             mu.Lock()
             defer mu.Unlock()
-            if running {
-                return 1
-            }
+            if running { return 1 }
             return 0
         }
 
-        // GetConfig returns the current config.
+        //export GetStatus
+        func GetStatus() *C.char {
+            mu.Lock()
+            defer mu.Unlock()
+            if running {
+                return C.CString("running")
+            }
+            return C.CString("stopped")
+        }
+
+        //export RestartXray
+        func RestartXray(configJSON *C.char) *C.char {
+            mu.Lock()
+            defer mu.Unlock()
+            // stop
+            running = false
+            config = ""
+            // start
+            config = C.GoString(configJSON)
+            var js map[string]interface{}
+            if err := json.Unmarshal([]byte(config), &js); err != nil {
+                return C.CString(fmt.Sprintf("config error: %v", err))
+            }
+            running = true
+            return C.CString("xray restarted")
+        }
+
+        //export SetupTun2Socks
+        func SetupTun2Socks(tunIP, tunGW, tunMask, dns *C.char) *C.char {
+            if IsRunning() == 0 {
+                return C.CString("not running")
+            }
+            // STUB: In a real implementation, you would initialize go-tun2socks here.
+            return C.CString(fmt.Sprintf(
+                "Stub tun2socks (ip=%s, gw=%s, mask=%s, dns=%s)",
+                C.GoString(tunIP), C.GoString(tunGW), C.GoString(tunMask), C.GoString(dns)))
+        }
+
         //export GetConfig
         func GetConfig() *C.char {
             mu.Lock()
             defer mu.Unlock()
             return C.CString(config)
         }
-        EOFLIB
+        EOF
 
     - name: Create go.mod
       run: |
@@ -120,12 +145,20 @@ jobs:
 
         go 1.25
 
-        require golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
+        require golang.org/x/mobile v0.0.0-20240228222107-81b878f5fa46
         EOF
 
     - name: Download dependencies
       run: |
+        go clean -modcache
         go mod tidy
+
+    - name: Install gomobile tools
+      run: |
+        export PATH="$(go env GOPATH)/bin:$PATH"
+        go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20240228222107-81b878f5fa46
+        go install golang.org/x/mobile/cmd/gobind@v0.0.0-20240228222107-81b878f5fa46
+        echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
     - name: Initialize gomobile
       run: gomobile init
@@ -133,14 +166,13 @@ jobs:
     - name: Build AAR with gomobile bind
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
-        export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
         gomobile bind -v \
           -target=android \
           -androidapi=35 \
           -o build/outputs/AndroidLibXrayLite.aar \
           github.com/2dust/AndroidLibXrayLite/libxray
 
-    - name: List artifact contents
+    - name: List build outputs
       run: ls -lah build/outputs/
 
     - name: Upload artifact
