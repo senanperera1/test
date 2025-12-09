@@ -66,15 +66,14 @@ jobs:
     
     - name: Ensure Go module and pin go-tun2socks API
       run: |
-        # Create a root Go module to control dependency versions resolved by gomobile
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.23
 
-        require (
-          github.com/eycorsican/go-tun2socks v1.16.7
-        )
+        require github.com/eycorsican/go-tun2socks v1.16.7
+
+        replace github.com/eycorsican/go-tun2socks => github.com/eycorsican/go-tun2socks v1.16.7
         EOF
         go mod tidy
     
@@ -97,7 +96,6 @@ jobs:
             Stop()
         }
 
-        // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address/port.
         func TunStart(fd int, socksAddr string, port uint16) bool {
             if tunRunning {
                 return true
@@ -106,17 +104,14 @@ jobs:
             tcpHandler := socks.NewTCPHandler(socksAddr, port)
             udpHandler := socks.NewUDPHandler(socksAddr, port, 30*time.Second)
 
-            // NewTun2Socks is available in go-tun2socks v1.16.7 (pinned in go.mod).
             t := core.NewTun2Socks(fd, tcpHandler, udpHandler)
             tun = t
 
             go t.Start()
-
             tunRunning = true
             return true
         }
 
-        // TunStop stops the tun2socks loop.
         func TunStop() {
             if tunRunning && tun != nil {
                 tun.Stop()
