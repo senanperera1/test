@@ -1,4 +1,4 @@
-name: Build Android AAR (Gradle or gomobile)
+name: Build LondonX tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -6,24 +6,33 @@ on:
     branches: [ main, master ]
 
 jobs:
-  build:
+  build-upstream-tun2socks:
     runs-on: ubuntu-latest
     env:
       ANDROID_API_LEVEL: 35
       ANDROID_NDK_VERSION: 27.0.12077973
-      GO_VERSION: 1.25.5
+      UPSTREAM_REPO: LondonX/universal-android-tun2socks
+      UPSTREAM_DIR: upstream-tun2socks
 
     steps:
-      - name: Checkout repository
+      - name: Checkout this repository (for workflow files)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          fetch-depth: 1
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Checkout upstream repo (LondonX tun2socks)
+        uses: actions/checkout@v4
         with:
-          go-version: ${{ env.GO_VERSION }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          path: ${{ env.UPSTREAM_DIR }}
+          fetch-depth: 1
+
+      - name: Show upstream layout (diagnostic)
+        run: |
+          echo "=== upstream repo path: ${{ env.UPSTREAM_DIR }} ==="
+          ls -la "${{ env.UPSTREAM_DIR }}" || true
+          echo "=== find gradlew and build files ==="
+          find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f \( -name gradlew -o -name settings.gradle -o -name build.gradle -o -name build.gradle.kts \) -print || true
 
       - name: Set up Java (JDK 17)
         uses: actions/setup-java@v4
@@ -38,131 +47,97 @@ jobs:
           ndk: ${{ env.ANDROID_NDK_VERSION }}
 
       - name: Accept Android SDK licenses
-        run: |
-          yes | sdkmanager --licenses || true
+        run: yes | sdkmanager --licenses || true
 
-      - name: Install gomobile and gobind
-        run: |
-          unset GOFLAGS || true
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-cache-${{ runner.os }}-${{ hashFiles(format('{0}/**/gradle-wrapper.properties', env.UPSTREAM_DIR)) }}
+          restore-keys: |
+            gradle-cache-${{ runner.os }}-
 
-      - name: Initialize gomobile (safe to run even if not used)
+      - name: Make upstream gradlew executable (if present)
         run: |
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
-          gomobile init
-
-      - name: Locate Gradle wrapper (if any)
-        id: find_gradlew
-        run: |
-          # find gradlew up to 4 levels deep
-          GRADLEW_PATH=$(find . -maxdepth 4 -type f -name gradlew | head -n 1 || true)
-          if [ -n "$GRADLEW_PATH" ]; then
-            echo "Found gradlew at: $GRADLEW_PATH"
-            chmod +x "$GRADLEW_PATH"
-            GRADLEW_DIR=$(dirname "$GRADLEW_PATH")
-            echo "GRADLEW_DIR=$GRADLEW_DIR" >> $GITHUB_ENV
+          GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 2 -type f -name gradlew | head -n 1 || true)
+          if [ -n "$GW" ]; then
+            echo "Found gradlew at: $GW"
+            chmod +x "$GW"
           else
-            echo "GRADLEW_DIR=" >> $GITHUB_ENV
-            echo "No gradlew found"
+            echo "No gradlew found in upstream; will try system gradle if available"
           fi
 
-      - name: Prepare outputs dir
-        run: mkdir -p build/outputs
-
-      - name: Build (Gradle assembleRelease or gomobile bind)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_VERSION }}
+      - name: Build upstream tun2socks (assembleRelease)
         run: |
           set -euo pipefail
-
-          # Helper to copy any produced AARs into build/outputs
-          copy_aars() {
-            find . -type f -name "*.aar" -print0 | xargs -0 -I{} bash -c 'cp "{}" build/outputs/ || true'
-          }
-
-          # 1) If a Gradle wrapper was found, prefer using it
-          if [ -n "${GRADLEW_DIR}" ]; then
-            echo "Using Gradle wrapper in ${GRADLEW_DIR}"
-            pushd "${GRADLEW_DIR}"
+          # prefer running wrapper if present
+          GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 2 -type f -name gradlew | head -n 1 || true)
+          if [ -n "$GW" ]; then
+            GW_DIR=$(dirname "$GW")
+            echo "Running gradlew in $GW_DIR"
+            pushd "$GW_DIR"
             ./gradlew clean --no-daemon --stacktrace || true
-            # Try assembleRelease for library modules; if module name differs, user must adjust
-            ./gradlew assembleRelease --no-daemon --stacktrace || {
-              echo "Gradle assembleRelease failed; attempting to list tasks for debugging"
-              ./gradlew tasks --all --no-daemon || true
-              popd
-              copy_aars
-              exit 1
-            }
+            # upstream README suggests: ./gradlew tun2socks:assembleRelease
+            ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace
             popd
-            copy_aars
-            echo "Gradle build finished. AARs (if any) copied to build/outputs"
-            exit 0
+          else
+            # fallback to system gradle if wrapper missing
+            echo "No gradlew wrapper; attempting system gradle in upstream dir"
+            pushd "${{ env.UPSTREAM_DIR }}"
+            gradle clean --no-daemon --stacktrace || true
+            gradle tun2socks:assembleRelease --no-daemon --stacktrace
+            popd
           fi
 
-          # 2) If no gradlew, but a Go package libv2ray exists, try gomobile bind
-          if [ -d "./libv2ray" ] || [ -f "./libv2ray/tun.go" ]; then
-            echo "Detected libv2ray Go package; attempting gomobile bind"
-            export PATH="$(go env GOPATH)/bin:$PATH"
-            export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
-            export GO111MODULE=on
-
-            # Ensure modules tidy
-            go mod tidy || true
-
-            # Try to build with gomobile bind
-            gomobile bind -v -target=android -androidapi=${{ env.ANDROID_API_LEVEL }} -o build/outputs/AndroidLibXrayLite.aar ./libv2ray || {
-              echo "gomobile bind failed; printing go build errors for libv2ray"
-              go build -v ./libv2ray 2>&1 | sed -n '1,200p' || true
-              copy_aars
-              exit 1
-            }
-
-            echo "gomobile bind succeeded; AAR at build/outputs/AndroidLibXrayLite.aar"
-            copy_aars
-            exit 0
-          fi
-
-          # 3) No gradlew and no libv2ray: try system gradle (requires setup-gradle)
-          echo "No gradlew and no libv2ray detected. Attempting system gradle (may fail if not installed)."
-          if command -v gradle >/dev/null 2>&1; then
-            gradle assembleRelease --no-daemon --stacktrace || {
-              echo "System gradle build failed"
-              copy_aars
-              exit 1
-            }
-            copy_aars
-            exit 0
-          fi
-
-          echo "No build method succeeded: no gradlew found, no libv2ray package, and system gradle not available."
-          echo "Please ensure your repository contains an Android Gradle project (with gradlew) or a Go package (libv2ray) for gomobile."
-          exit 1
-
-      - name: List produced artifacts
-        if: always()
+      - name: Collect AARs and native libs
         run: |
+          mkdir -p build/outputs
+          # Copy any AARs produced anywhere in the upstream tree
+          find "${{ env.UPSTREAM_DIR }}" -type f -name "*.aar" -exec cp {} build/outputs/ \; || true
+
+          # Per upstream README: copy stripped native libs from tun2socks build output
+          # Typical path: tun2socks/build/intermediates/stripped_native_libs/release/out/lib
+          STRIPPED_DIR="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/stripped_native_libs/release/out/lib"
+          if [ -d "$STRIPPED_DIR" ]; then
+            echo "Copying stripped native libs from $STRIPPED_DIR"
+            # preserve ABI subfolders
+            mkdir -p build/outputs/jniLibs
+            cp -r "$STRIPPED_DIR"/* build/outputs/jniLibs/ || true
+          else
+            echo "No stripped native libs found at $STRIPPED_DIR (path may differ)"
+            # try common alternate path
+            ALT="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/merged_native_libs/release/out/lib"
+            if [ -d "$ALT" ]; then
+              echo "Copying native libs from alternate path $ALT"
+              mkdir -p build/outputs/jniLibs
+              cp -r "$ALT"/* build/outputs/jniLibs/ || true
+            fi
+          fi
+
           echo "=== build/outputs contents ==="
           ls -la build/outputs || true
+          if [ -d build/outputs/jniLibs ]; then
+            echo "=== jniLibs contents ==="
+            find build/outputs/jniLibs -maxdepth 3 -type f -print || true
+          fi
 
-      - name: Upload AAR artifacts
-        if: always()
+      - name: Upload artifacts (AAR and native libs)
         uses: actions/upload-artifact@v4
         with:
-          name: android-aar-artifacts
-          path: build/outputs/*.aar
+          name: londonx-tun2socks-artifacts
+          path: |
+            build/outputs/*.aar
+            build/outputs/jniLibs/**
           retention-days: 90
 
-      - name: Debug info on failure
+      - name: Failure debug (only on failure)
         if: failure()
         run: |
-          echo "=== Repo top-level files ==="
-          ls -la
-          echo "=== Find gradlew ==="
-          find . -maxdepth 4 -type f -name gradlew -print || true
-          echo "=== Show go.mod (if present) ==="
-          if [ -f go.mod ]; then sed -n '1,200p' go.mod || true; else echo "no go.mod"; fi
-          echo "=== Show build.gradle files ==="
-          find . -maxdepth 4 -type f -name 'build.gradle*' -print || true
+          echo "=== Upstream dir listing ==="
+          ls -la "${{ env.UPSTREAM_DIR }}" || true
+          echo "=== Find build.gradle files ==="
+          find "${{ env.UPSTREAM_DIR }}" -maxdepth 4 -type f -name 'build.gradle*' -print || true
+          echo "=== Show first 200 lines of tun2socks README (if present) ==="
+          if [ -f "${{ env.UPSTREAM_DIR }}/README.md" ]; then sed -n '1,200p' "${{ env.UPSTREAM_DIR }}/README.md" || true; else echo "no README.md"; fi
