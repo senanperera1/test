@@ -18,26 +18,41 @@ jobs:
         repository: LondonX/tun2socks-android
         ref: main
     
-    - name: Set up JDK 17
+    - name: Set up JDK 11
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
+        java-version: '11'
         distribution: 'temurin'
         cache: gradle
     
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
     
-    - name: Install Android NDK
+    - name: Install Android NDK and CMake
       run: |
-        echo "y" | sdkmanager "ndk;25.2.9519653"
-        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+        echo "y" | sdkmanager "ndk;21.4.7075529"
+        echo "y" | sdkmanager "cmake;3.10.2.4988404"
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> $GITHUB_ENV
+    
+    - name: Create local.properties
+      run: |
+        echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+        echo "ndk.dir=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> local.properties
+        echo "cmake.dir=$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" >> local.properties
+    
+    - name: Update Gradle wrapper to 7.6
+      run: |
+        ./gradlew wrapper --gradle-version=7.6 --distribution-type=bin
     
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
     
+    - name: Clean build
+      run: ./gradlew clean
+      continue-on-error: true
+    
     - name: Build AAR with Gradle
-      run: ./gradlew tun2socks:assembleRelease --stacktrace
+      run: ./gradlew tun2socks:assembleRelease --stacktrace --info
     
     - name: Find and list AAR files
       run: |
@@ -52,7 +67,7 @@ jobs:
         path: tun2socks/build/outputs/aar/*.aar
         if-no-files-found: error
     
-    - name: Upload native libraries (optional)
+    - name: Upload native libraries
       uses: actions/upload-artifact@v4
       with:
         name: tun2socks-native-libs
@@ -64,6 +79,8 @@ jobs:
         echo "Build completed successfully!" > build-info.txt
         echo "Timestamp: $(date)" >> build-info.txt
         echo "Commit: ${{ github.sha }}" >> build-info.txt
+        echo "NDK: 21.4.7075529" >> build-info.txt
+        echo "CMake: 3.10.2.4988404" >> build-info.txt
         
     - name: Upload Build Info
       uses: actions/upload-artifact@v4
