@@ -11,6 +11,8 @@ jobs:
 
     env:
       GOFLAGS: -mod=vendor
+      GOPROXY: direct
+      GOSUMDB: off
 
     steps:
     - name: Checkout AndroidLibXrayLite
@@ -67,9 +69,10 @@ jobs:
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
 
-    - name: Ensure Go module, pin and vendor go-tun2socks v1.16.7
+    - name: Clone go-tun2socks v1.16.7 locally and wire replace
       run: |
-        # Root module to control deps gomobile will resolve
+        git clone --depth 1 --branch v1.16.7 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks
+
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
@@ -79,17 +82,16 @@ jobs:
           github.com/eycorsican/go-tun2socks v1.16.7
         )
 
-        replace github.com/eycorsican/go-tun2socks => github.com/eycorsican/go-tun2socks v1.16.7
+        replace github.com/eycorsican/go-tun2socks => ./third_party/go-tun2socks
         EOF
 
-        # Vendor dependencies so -mod=vendor is honored
         go mod tidy
         go mod vendor
 
-        # Show pinned version actually vendored
-        grep -R "module github.com/eycorsican/go-tun2socks" -n vendor/github.com/eycorsican/go-tun2socks/go.mod || true
+        # Assert local replace is in effect
+        test -f third_party/go-tun2socks/core/tun.go || ls -R third_party/go-tun2socks | head
 
-    - name: Add tun2socks exports (expects v1.16.7 API)
+    - name: Add tun2socks exports (expects v1.16.7 API with NewTun2Socks)
       run: |
         mkdir -p libv2ray
         cat > libv2ray/tun.go <<'EOF'
@@ -147,7 +149,7 @@ jobs:
           chmod +x gradlew 2>/dev/null || true
           ./gradlew assembleRelease || gradle assembleRelease
         else
-          # Use vendored deps and force API level
+          # Use local replace + vendored deps to prevent drift
           gomobile bind -v \
             -target=android \
             -androidapi=35 \
