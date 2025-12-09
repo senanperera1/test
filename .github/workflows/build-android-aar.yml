@@ -14,7 +14,6 @@ jobs:
       UPSTREAM_REPO: LondonX/tun2socks-android
       UPSTREAM_BRANCH: main
       UPSTREAM_DIR: upstream-tun2socks
-      GRADLE_USER_HOME: ${{ runner.temp }}/gradle-cache
 
     steps:
       - name: Checkout this repository (workflow files)
@@ -55,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.GRADLE_USER_HOME }}
+            ~/.gradle/caches
             ~/.gradle/wrapper
           key: gradle-cache-${{ runner.os }}-${{ hashFiles(format('{0}/**/gradle-wrapper.properties', env.UPSTREAM_DIR)) }}
           restore-keys: |
@@ -75,15 +74,18 @@ jobs:
       - name: Show Java and Gradle info
         run: |
           java -version || true
-          echo "GRADLE_USER_HOME=${GRADLE_USER_HOME}"
           echo "Listing gradle-wrapper.properties:"
           find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f -name 'gradle-wrapper.properties' -print -exec sed -n '1,120p' {} \; || true
 
       - name: Build :tun2socks:assembleRelease (wrapper, verbose)
         run: |
           set -euo pipefail
+          # Use runner runtime temp for gradle user home to avoid permission issues
+          export GRADLE_USER_HOME="$RUNNER_TEMP/gradle-cache"
+          mkdir -p "$GRADLE_USER_HOME"
+          echo "GRADLE_USER_HOME=$GRADLE_USER_HOME"
+
           UP="${{ env.UPSTREAM_DIR }}"
-          # run wrapper from repo root (wrapper exists at repo root)
           GW=$(find "$UP" -maxdepth 2 -type f -name gradlew | head -n 1)
           if [ -z "$GW" ]; then
             echo "gradlew not found; aborting"
@@ -93,12 +95,9 @@ jobs:
           echo "Running gradlew in $GW_DIR"
           pushd "$GW_DIR"
 
-          # Ensure we use the wrapper's gradle distribution and show warnings
           ./gradlew --version
-          # Clean first
           ./gradlew clean --no-daemon --warning-mode all --stacktrace || true
 
-          # Run the exact task with verbose flags; capture full logs
           ./gradlew :tun2socks:assembleRelease --no-daemon --warning-mode all --stacktrace --info || {
             echo "Gradle build failed. Collecting debug info..."
             echo "=== Last 200 lines of gradle daemon logs (if any) ==="
@@ -118,10 +117,8 @@ jobs:
       - name: Collect AARs and native libs
         run: |
           mkdir -p build/outputs
-          # Copy any AARs produced anywhere in the upstream tree
           find "${{ env.UPSTREAM_DIR }}" -type f -name "*.aar" -exec cp {} build/outputs/ \; || true
 
-          # Per upstream README: copy stripped native libs from tun2socks build output
           STRIPPED_DIR="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/stripped_native_libs/release/out/lib"
           if [ -d "$STRIPPED_DIR" ]; then
             echo "Copying stripped native libs from $STRIPPED_DIR"
