@@ -2,8 +2,7 @@ name: Build tun2socks AAR (external clone)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -16,21 +15,31 @@ jobs:
         with:
           java-version: '11'
           distribution: 'temurin'
-          # cache removed because we are NOT building this repo
 
-      - name: Clone external tun2socks-android repo
+      - name: Install Android SDK tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install CMake 3.10.2
         run: |
-          git clone https://github.com/LondonX/tun2socks-android.git
-          ls -R tun2socks-android
+          sdkmanager "cmake;3.10.2.4988404"
+          ls /usr/local/lib/android/sdk/cmake/
+
+      - name: Clone tun2socks-android repository
+        run: git clone https://github.com/LondonX/tun2socks-android.git
+
+      - name: Configure CMake version for Gradle
+        run: |
+          echo "cmake.dir=/usr/local/lib/android/sdk/cmake/3.10.2.4988404" >> tun2socks-android/local.properties
+          cat tun2socks-android/local.properties
 
       - name: Make gradlew executable
         run: chmod +x tun2socks-android/gradlew
 
       - name: Build Release AAR
         working-directory: tun2socks-android
-        run: ./gradlew tun2socks:assembleRelease
+        run: ./gradlew tun2socks:assembleRelease --stacktrace
 
-      - name: Upload AAR artifact
+      - name: Upload built AAR
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-aar
