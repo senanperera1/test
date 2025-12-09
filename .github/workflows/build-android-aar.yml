@@ -1,4 +1,4 @@
-name: Build LondonX tun2socks AAR (fixed android setup)
+name: Build LondonX tun2socks AAR (stable)
 
 on:
   workflow_dispatch:
@@ -35,16 +35,20 @@ jobs:
           ls -la "${{ env.UPSTREAM_DIR }}" || true
           find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f \( -name gradlew -o -name settings.gradle -o -name build.gradle \) -print || true
 
-      - name: Set up Java (JDK 17)
+      - name: Set up Java 17 (required for sdkmanager)
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Setup Android SDK and NDK (install packages)
+      - name: Export Android SDK root
+        run: |
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "PATH=$PATH:/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_ENV
+
+      - name: Install Android SDK packages (cmdline-tools, platform, build-tools, ndk)
         uses: android-actions/setup-android@v3
         with:
-          # install commandline tools + platform + build-tools + specific NDK
           packages: |
             cmdline-tools;latest
             platform-tools
@@ -52,44 +56,73 @@ jobs:
             build-tools;33.0.2
             ndk;${{ env.ANDROID_NDK_VERSION }}
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
+      - name: Accept Android SDK licenses (noninteractive)
+        run: |
+          # ensure sdkmanager is available and accept all licenses non-interactively
+          yes | sdkmanager --licenses || true
 
       - name: Make upstream gradlew executable
         run: |
           GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 2 -type f -name gradlew | head -n 1 || true)
-          if [ -n "$GW" ]; then
-            chmod +x "$GW"
-            echo "Found gradlew: $GW"
-          else
+          if [ -z "$GW" ]; then
             echo "gradlew not found in upstream repo; aborting"
             exit 1
           fi
+          chmod +x "$GW"
+          echo "Found gradlew: $GW"
+          echo "GRADLE_WRAPPER_DIR=$(dirname "$GW")" >> $GITHUB_ENV
 
-      - name: Build :tun2socks:assembleRelease (wrapper)
+      - name: Show Java and Gradle wrapper info
+        run: |
+          java -version || true
+          echo "Using gradle wrapper dir: $GRADLE_WRAPPER_DIR"
+          "$GRADLE_WRAPPER_DIR/gradlew" --version || true
+
+      - name: Build :tun2socks:assembleRelease (wrapper, verbose)
         run: |
           set -euo pipefail
           export GRADLE_USER_HOME="$RUNNER_TEMP/gradle-cache"
           mkdir -p "$GRADLE_USER_HOME"
-          UP="${{ env.UPSTREAM_DIR }}"
-          GW=$(find "$UP" -maxdepth 2 -type f -name gradlew | head -n 1)
-          GW_DIR=$(dirname "$GW")
-          pushd "$GW_DIR"
+          echo "GRADLE_USER_HOME=$GRADLE_USER_HOME"
+
+          pushd "$GRADLE_WRAPPER_DIR"
+          # show full wrapper distribution and run with verbose flags
           ./gradlew --version
           ./gradlew clean --no-daemon --warning-mode all --stacktrace || true
-          ./gradlew :tun2socks:assembleRelease --no-daemon --warning-mode all --stacktrace --info
+          ./gradlew :tun2socks:assembleRelease --no-daemon --warning-mode all --stacktrace --info || {
+            echo "Gradle build failed. Collecting debug info..."
+            echo "=== Last 200 lines of gradle daemon logs (if any) ==="
+            ls -la ~/.gradle/daemon || true
+            tail -n 200 ~/.gradle/daemon/*/daemon-*.log || true
+            echo "=== tun2socks/build.gradle ==="
+            sed -n '1,240p' "${{ env.UPSTREAM_DIR }}/tun2socks/build.gradle" || true
+            echo "=== project build.gradle ==="
+            sed -n '1,240p' "${{ env.UPSTREAM_DIR }}/build.gradle" || true
+            popd
+            exit 1
+          }
           popd
+          echo "Gradle build finished (success)."
 
       - name: Collect AARs and native libs
         run: |
           mkdir -p build/outputs
           find "${{ env.UPSTREAM_DIR }}" -type f -name "*.aar" -exec cp {} build/outputs/ \; || true
+
           STRIPPED_DIR="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/stripped_native_libs/release/out/lib"
           if [ -d "$STRIPPED_DIR" ]; then
             mkdir -p build/outputs/jniLibs
             cp -r "$STRIPPED_DIR"/* build/outputs/jniLibs/ || true
+          else
+            echo "No stripped native libs found at $STRIPPED_DIR (path may differ)"
           fi
+
+          echo "=== build/outputs contents ==="
           ls -la build/outputs || true
+          if [ -d build/outputs/jniLibs ]; then
+            echo "=== jniLibs contents ==="
+            find build/outputs/jniLibs -maxdepth 3 -type f -print || true
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
