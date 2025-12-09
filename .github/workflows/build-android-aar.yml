@@ -63,11 +63,83 @@ jobs:
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
 
-    - name: Root go.mod with pinned deps and local replace
+    - name: Clone go-tun2socks (latest stable) and inject local constructor
       run: |
-        # Optional local clone; we won’t rely on upstream symbols anyway
-        git clone --depth 1 --branch v1.16.11 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks || true
+        # Clone upstream (we’ll patch it locally to provide a stable API)
+        git clone --depth 1 --branch v1.16.11 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks
 
+        # Ensure it’s a valid module
+        cat > third_party/go-tun2socks/go.mod <<'EOF'
+        module github.com/eycorsican/go-tun2socks
+        go 1.18
+        require (
+          golang.org/x/net v0.47.0
+          golang.org/x/sys v0.24.0
+        )
+        EOF
+
+        # Inject a stable constructor + runner so symbols exist no matter upstream changes
+        cat > third_party/go-tun2socks/core/new_tun2socks.go <<'EOF'
+        package core
+
+        import (
+          "time"
+
+          "github.com/eycorsican/go-tun2socks/proxy/socks"
+        )
+
+        // Tun2SocksRunner offers Start/Stop compatible with older wrappers.
+        type Tun2SocksRunner struct {
+          fd      int
+          tcp     socks.TCPHandler
+          udp     socks.UDPHandler
+          started bool
+        }
+
+        // NewTun2Socks provides a stable constructor used by mobile bindings.
+        // It registers provided handlers and runs the main loop over the TUN fd.
+        func NewTun2Socks(fd int, tcp socks.TCPHandler, udp socks.UDPHandler) *Tun2SocksRunner {
+          return &Tun2SocksRunner{
+            fd:  fd,
+            tcp: tcp,
+            udp: udp,
+          }
+        }
+
+        // Start wires handlers and starts the core loop. This adapts to public core APIs that exist in v1.16.x.
+        func (r *Tun2SocksRunner) Start() {
+          if r.started {
+            return
+          }
+          // Register handlers (functions exist in maintained branches)
+          RegisterTCPHandler(r.tcp)
+          RegisterUDPHandler(r.udp)
+          // Kick off main loop on provided tun fd
+          Start(r.fd)
+          r.started = true
+        }
+
+        // Stop terminates the core loop.
+        func (r *Tun2SocksRunner) Stop() {
+          if !r.started {
+            return
+          }
+          Stop()
+          r.started = false
+        }
+
+        // Convenience constructor helpers for handlers
+        func NewTCPHandler(addr string, port uint16) socks.TCPHandler {
+          return socks.NewTCPHandler(addr, port)
+        }
+
+        func NewUDPHandler(addr string, port uint16, timeout time.Duration) socks.UDPHandler {
+          return socks.NewUDPHandler(addr, port, timeout)
+        }
+        EOF
+
+    - name: Wire root module to local patched third_party
+      run: |
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
@@ -83,82 +155,8 @@ jobs:
 
         go mod tidy
 
-    - name: Add shim and tun2socks exports
+    - name: Add libv2ray exports using patched constructor
       run: |
-        mkdir -p libv2ray/internal
-        cat > libv2ray/internal/t2s_shim.go <<'EOF'
-        package internal
-
-        import (
-          "time"
-
-          "github.com/eycorsican/go-tun2socks/core"
-          "github.com/eycorsican/go-tun2socks/proxy/socks"
-        )
-
-        // T2S provides Start/Stop around tun2socks using SOCKS handlers.
-        type T2S struct {
-          fd        int
-          tcp       interface{}
-          udp       interface{}
-          running   bool
-        }
-
-        // NewTun2Socks creates a T2S runner compatible with older API surface.
-        // tcpHandler and udpHandler should be created via socks.NewTCPHandler/NewUDPHandler.
-        func NewTun2Socks(fd int, tcpHandler interface{}, udpHandler interface{}) *T2S {
-          return &T2S{
-            fd:  fd,
-            tcp: tcpHandler,
-            udp: udpHandler,
-          }
-        }
-
-        // Start wires handlers and starts the core loop, adapting to available API.
-        func (t *T2S) Start() {
-          if t.running {
-            return
-          }
-          // Attempt the known registration patterns. We avoid compile-time dependency
-          // on removed symbols by using the handler types directly.
-          // Prefer socks handlers (address, port, timeout) already constructed by caller.
-
-          // v1.16.x socks constructors:
-          // socks.NewTCPHandler(addr string, port uint16)
-          // socks.NewUDPHandler(addr string, port uint16, timeout time.Duration)
-
-          // Use the public entry points available in v1.16.x: core.Start with fd and handlers
-          // Some versions expose Run/Stop or a loop structure; we rely on StartTCP/UDP handlers.
-
-          // Register handlers via core package where available
-          // The following functions exist across maintained branches:
-          core.RegisterTCPHandler(t.tcp.(socks.TCPHandler))
-          core.RegisterUDPHandler(t.udp.(socks.UDPHandler))
-
-          // Start the main loop over provided tun fd
-          core.Start(t.fd)
-          t.running = true
-        }
-
-        // Stop stops the core loop safely.
-        func (t *T2S) Stop() {
-          if !t.running {
-            return
-          }
-          core.Stop()
-          t.running = false
-        }
-
-        // Helper constructors so callers can build handlers with correct args.
-        func NewTCPHandler(addr string, port uint16) socks.TCPHandler {
-          return socks.NewTCPHandler(addr, port)
-        }
-
-        func NewUDPHandler(addr string, port uint16, timeout time.Duration) socks.UDPHandler {
-          return socks.NewUDPHandler(addr, port, timeout)
-        }
-        EOF
-
         mkdir -p libv2ray
         cat > libv2ray/tun.go <<'EOF'
         package libv2ray
@@ -166,8 +164,7 @@ jobs:
         import (
           "time"
 
-          "github.com/eycorsican/go-tun2socks/proxy/socks"
-          "github.com/2dust/AndroidLibXrayLite/libv2ray/internal"
+          "github.com/eycorsican/go-tun2socks/core"
         )
 
         var tunRunning bool
@@ -181,10 +178,10 @@ jobs:
           if tunRunning {
             return true
           }
-          tcp := internal.NewTCPHandler(socksAddr, port)
-          udp := internal.NewUDPHandler(socksAddr, port, 30*time.Second)
+          tcp := core.NewTCPHandler(socksAddr, port)
+          udp := core.NewUDPHandler(socksAddr, port, 30*time.Second)
 
-          t := internal.NewTun2Socks(fd, tcp, udp)
+          t := core.NewTun2Socks(fd, tcp, udp)
           tun = t
           go t.Start()
 
@@ -201,7 +198,7 @@ jobs:
         }
         EOF
 
-    - name: Build AAR (normal module resolution)
+    - name: Build AAR (normal module resolution so gobind finds x/mobile/bind)
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
