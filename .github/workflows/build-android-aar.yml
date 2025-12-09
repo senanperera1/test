@@ -1,88 +1,119 @@
-name: Build Full tun2socks AAR
+name: Build Full tun2socks AAR (Stable)
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch:
 
 jobs:
-  build-full-aar:
+  build:
     runs-on: ubuntu-latest
 
-    env:
-      GO_VERSION: 1.21.1
-
     steps:
-      # --- Checkout repo ---
-      - name: Checkout repo
+      # --------------------------
+      # 0. CHECKOUT YOUR REPO
+      # --------------------------
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Install Go ---
+
+      # --------------------------
+      # 1. INSTALL GO + GOMOBILE
+      # --------------------------
       - name: Install Go
         uses: actions/setup-go@v4
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: '1.21.x'
 
       - name: Install gomobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      # --- Install Android SDK Commandline Tools ---
-      - name: Install Android SDK Commandline Tools
+
+      # --------------------------
+      # 2. INSTALL ANDROID SDK + NDK + CMAKE
+      # --------------------------
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           api-level: 33
           build-tools: 33.0.2
 
-      # --- Install NDK 23.1.7779620 dynamically ---
-      - name: Install Android NDK
+      - name: Install NDK + CMake
         run: |
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;23.1.7779620"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/23.1.7779620" >> $GITHUB_ENV
-
-      # --- Install CMake 3.10.2 ---
-      - name: Install CMake
-        run: |
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.10.2.4988404"
-          echo "CMAKE_HOME=$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" >> $GITHUB_ENV
 
-      # --- Clone tun2socks-android ---
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/23.1.7779620" >> $GITHUB_ENV
+          echo "CMAKE_PATH=$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" >> $GITHUB_ENV
+
+
+      # --------------------------
+      # 3. CLONE tun2socks-android
+      # --------------------------
       - name: Clone tun2socks-android
-        run: git clone https://github.com/LondonX/tun2socks-android.git
-
-      # --- Configure CMake path for Gradle ---
-      - name: Configure local.properties for CMake
         run: |
-          echo "cmake.dir=$CMAKE_HOME" >> tun2socks-android/local.properties
-          cat tun2socks-android/local.properties
+          rm -rf tun2socks-android
+          git clone https://github.com/LondonX/tun2socks-android.git
 
-      # --- Make Gradle wrapper executable ---
-      - name: Make gradlew executable
-        run: chmod +x tun2socks-android/gradlew
 
-      # --- Build Go JNI library (multi-ABI) ---
-      - name: Build Go JNI library
+      # --------------------------
+      # 4. FIX: CREATE go.mod (MODULE WAS MISSING)
+      # --------------------------
+      - name: Create go.mod for mobile package
+        run: |
+          cd tun2socks-android/mobile
+          if [ ! -f "go.mod" ]; then
+            go mod init tun2socks/mobile
+            go mod tidy
+          fi
+
+
+      # --------------------------
+      # 5. BUILD GOMOBILE MULTI-ABI AAR
+      # --------------------------
+      - name: Build Go AAR using gomobile
         run: |
           cd tun2socks-android
-          # Universal Android AAR
-          gomobile bind -target=android -o tun2socks.aar ./mobile
+          gomobile bind -target=android -o gomobile-output.aar ./mobile
 
-      # --- Copy Go AAR into Gradle project ---
-      - name: Integrate Go AAR into Gradle
+
+      # --------------------------
+      # 6. INSERT GOMOBILE AAR INTO GRADLE PROJECT
+      # --------------------------
+      - name: Insert gomobile output into Gradle libs
         run: |
           cd tun2socks-android
           mkdir -p tun2socks/src/main/libs
-          cp tun2socks.aar tun2socks/src/main/libs/
+          cp gomobile-output.aar tun2socks/src/main/libs/mobile.aar
 
-      # --- Build final AAR with Gradle ---
-      - name: Build Release AAR
+
+      # --------------------------
+      # 7. SETUP local.properties FOR CMAKE
+      # --------------------------
+      - name: Write local.properties
+        run: |
+          echo "cmake.dir=$CMAKE_PATH" >> tun2socks-android/local.properties
+          echo "ndk.dir=$ANDROID_NDK_HOME" >> tun2socks-android/local.properties
+
+
+      # --------------------------
+      # 8. GRADLE BUILD → FINAL AAR
+      # --------------------------
+      - name: Make Gradle executable
+        run: chmod +x tun2socks-android/gradlew
+
+      - name: Build final AAR
         working-directory: tun2socks-android
-        run: ./gradlew tun2socks:assembleRelease --stacktrace
+        run: ./gradlew tun2socks:assembleRelease --stacktrace --no-daemon
 
-      # --- Upload the final AAR artifact ---
-      - name: Upload project-ready AAR
+
+      # --------------------------
+      # 9. EXPORT FINAL PROJECT‑READY AAR
+      # --------------------------
+      - name: Upload Final AAR
         uses: actions/upload-artifact@v4
         with:
-          name: tun2socks-full-aar
+          name: tun2socks-project-ready-aar
           path: tun2socks-android/tun2socks/build/outputs/aar/*.aar
