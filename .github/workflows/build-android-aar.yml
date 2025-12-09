@@ -12,7 +12,7 @@ jobs:
       GO111MODULE: on
 
     steps:
-    - name: Checkout repo
+    - name:  Checkout repo
       uses: actions/checkout@v4
 
     - name: Setup Go 1.25.5
@@ -21,7 +21,7 @@ jobs:
         go-version: '1.25.5'
 
     - name: Setup JDK 17
-      uses: actions/setup-java@v4
+      uses:  actions/setup-java@v4
       with:
         distribution:  'zulu'
         java-version: '17'
@@ -29,7 +29,7 @@ jobs:
     - name: Setup Android SDK and NDK r27
       uses: android-actions/setup-android@v3
       with:
-        ndk:  '27.0.12077973'
+        ndk:  '27. 0.12077973'
         api-level: 35
 
     - name: Install gomobile
@@ -43,9 +43,9 @@ jobs:
         mkdir -p xray
         mkdir -p build/outputs
 
-    - name: Create xray package file
+    - name: Create xray package
       run: |
-        cat > xray/xraylib. go <<'EOF'
+        cat > xray/xraylib.go <<'EOFXRAY'
         package xraylib
 
         type XrayCore struct {
@@ -55,7 +55,7 @@ jobs:
 
         func NewXrayCore() *XrayCore {
           return &XrayCore{
-            Running:  false,
+            Running: false,
             Config:  "",
           }
         }
@@ -71,11 +71,11 @@ jobs:
           x.Config = ""
           return nil
         }
-        EOF
+        EOFXRAY
 
-    - name: Create main Go file with exports
+    - name: Create main Go file
       run: |
-        cat > main.go <<'EOF'
+        cat > main.go <<'EOFMAIN'
         package main
 
         import "C"
@@ -89,13 +89,13 @@ jobs:
 
         var (
           xrayInstance *xraylib.XrayCore
-          mu           sync.Mutex
+          mu sync. Mutex
         )
 
         //export StartXray
         func StartXray(configJSON *C.char) *C.char {
-          mu. Lock()
-          defer mu. Unlock()
+          mu.Lock()
+          defer mu.Unlock()
 
           configStr := C.GoString(configJSON)
           
@@ -119,10 +119,10 @@ jobs:
 
         //export StopXray
         func StopXray() *C.char {
-          mu.Lock()
-          defer mu.Unlock()
+          mu. Lock()
+          defer mu. Unlock()
 
-          if xrayInstance == nil || !xrayInstance.Running {
+          if xrayInstance == nil || !xrayInstance. Running {
             return C.CString("Xray not running")
           }
 
@@ -156,8 +156,8 @@ jobs:
 
         //export RestartXray
         func RestartXray(configJSON *C.char) *C.char {
-          mu. Lock()
-          defer mu. Unlock()
+          mu.Lock()
+          defer mu.Unlock()
 
           configStr := C.GoString(configJSON)
           
@@ -169,10 +169,10 @@ jobs:
 
           xrayInstance = &xraylib.XrayCore{
             Running: true,
-            Config:  configStr,
+            Config: configStr,
           }
 
-          return C. CString("Xray restarted successfully")
+          return C.CString("Xray restarted successfully")
         }
 
         //export SetupTun2Socks
@@ -189,7 +189,7 @@ jobs:
           mask := C.GoString(tunMask)
           dns := C.GoString(dnsServer)
 
-          result := fmt.Sprintf("Tun2Socks configured: IP=%s, GW=%s, Mask=%s, DNS=%s", ip, gw, mask, dns)
+          result := fmt. Sprintf("Tun2Socks configured: IP=%s, GW=%s, Mask=%s, DNS=%s", ip, gw, mask, dns)
           return C.CString(result)
         }
 
@@ -223,23 +223,19 @@ jobs:
         }
 
         func main() {}
-        EOF
+        EOFMAIN
 
     - name: Create go.mod
       run: |
-        cat > go.mod <<'EOF'
+        cat > go.mod <<'EOFMOD'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
 
         require golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
-        EOF
+        EOFMOD
 
-    - name: Create go.sum
-      run: |
-        touch go.sum
-
-    - name: Download dependencies
+    - name:  Download dependencies
       run: |
         go mod download
         go mod tidy
