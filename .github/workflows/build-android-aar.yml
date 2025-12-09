@@ -110,7 +110,12 @@ jobs:
         yes | sdkmanager --licenses || true
         
         echo "Installing NDK 21.4.7075529..."
-        sdkmanager --install "ndk;21.4.7075529" || echo "Failed to install primary NDK" && sdkmanager --install "ndk;21.3.6528147" || echo "Failed to install fallback NDK"
+        if ! sdkmanager --install "ndk;21.4.7075529"; then
+          echo "Failed to install primary NDK, trying fallback..."
+          if ! sdkmanager --install "ndk;21.3.6528147"; then
+            echo "Failed to install fallback NDK, continuing anyway..."
+          fi
+        fi
         
         echo ""
         echo "NDK installation complete"
@@ -125,7 +130,14 @@ jobs:
         echo "Installing CMake 3.10.2"
         echo "==================================="
         
-        sdkmanager --install "cmake;3.10.2.4988404" || echo "Exact CMake version not available" && sdkmanager --install "cmake;3.18.1" || sdkmanager --install "cmake;3.22.1" || echo "CMake installation failed"
+        if ! sdkmanager --install "cmake;3.10.2.4988404"; then
+          echo "Exact CMake version not available, trying alternatives..."
+          if ! sdkmanager --install "cmake;3.18.1"; then
+            if ! sdkmanager --install "cmake;3.22.1"; then
+              echo "CMake installation failed, will use system CMake"
+            fi
+          fi
+        fi
         
         echo ""
         echo "CMake installation complete"
@@ -195,16 +207,18 @@ jobs:
         echo ""
         
     ############################################################################
-    # STEP 7: Create local.properties
+    # STEP 7: Create local.properties and fix NDK configuration
     ############################################################################
-    - name: 📝 Create local.properties with all paths
+    - name: 📝 Create local.properties and fix NDK warnings
       run: |
         echo "==================================="
         echo "Creating local.properties"
         echo "==================================="
         
         echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-        echo "ndk.dir=$ANDROID_NDK_HOME" >> local.properties
+        
+        # Don't set ndk.dir to avoid deprecation warnings
+        # Instead, we'll set ndkVersion in build.gradle
         
         if [ ! -z "$CMAKE_DIR" ]; then
           echo "cmake.dir=$CMAKE_DIR" >> local.properties
@@ -213,6 +227,22 @@ jobs:
         echo ""
         echo "local.properties content:"
         cat local.properties
+        echo ""
+        
+        # Fix NDK deprecation warnings by setting ndkVersion in build.gradle
+        echo "Patching build.gradle to set ndkVersion..."
+        
+        if [ -f "tun2socks/build.gradle" ]; then
+          # Extract NDK version from path
+          NDK_VERSION=$(basename "$ANDROID_NDK_HOME")
+          
+          # Add ndkVersion to android block if not present
+          if ! grep -q "ndkVersion" "tun2socks/build.gradle"; then
+            sed -i "/android {/a\    ndkVersion \"$NDK_VERSION\"" tun2socks/build.gradle
+            echo "Added ndkVersion to tun2socks/build.gradle"
+          fi
+        fi
+        
         echo ""
         
     ############################################################################
@@ -268,7 +298,12 @@ jobs:
         echo "Cleaning previous builds"
         echo "==================================="
         
-        ./gradlew clean --no-daemon --stacktrace || echo "Clean failed but continuing" && rm -rf build/ && rm -rf tun2socks/build/ && rm -rf .gradle/
+        if ! ./gradlew clean --no-daemon --stacktrace; then
+          echo "Clean failed, manually removing build directories..."
+          rm -rf build/
+          rm -rf tun2socks/build/
+          rm -rf .gradle/
+        fi
         
         echo "Clean complete"
         
@@ -281,7 +316,16 @@ jobs:
         echo "Testing Gradle configuration"
         echo "==================================="
         
-        ./gradlew tasks --no-daemon --stacktrace || echo "Configuration test failed" && echo "" && echo "Attempting to diagnose issues..." && echo "" && echo "Project structure:" && find . -name "build.gradle*" -type f && echo "" && exit 1
+        if ! ./gradlew tasks --no-daemon --stacktrace; then
+          echo "Configuration test failed!"
+          echo ""
+          echo "Attempting to diagnose issues..."
+          echo ""
+          echo "Project structure:"
+          find . -name "build.gradle*" -type f
+          echo ""
+          exit 1
+        fi
         
         echo "Gradle configuration successful"
         
@@ -300,10 +344,55 @@ jobs:
           DEBUG_FLAGS="--debug"
         fi
         
-        ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace --info $DEBUG_FLAGS || echo "" && echo "Build failed! Attempting recovery..." && echo "" && echo "Retry 1: Building without verbose logging..." && ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace || echo "" && echo "Retry 1 failed! Trying with refresh dependencies..." && echo "" && ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace --refresh-dependencies || echo "" && echo "All build attempts failed!" && echo "" && echo "Collecting diagnostic information..." && echo "" && echo "Java version:" && java -version && echo "" && echo "Gradle version:" && ./gradlew --version && echo "" && echo "Environment variables:" && env | grep -E "(JAVA|ANDROID|NDK|CMAKE)" || true && echo "" && echo "Build output structure:" && find . -type d -name "build" 2>/dev/null || true && echo "" && exit 1
+        # Attempt 1: Full build with info logging
+        if ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace --info $DEBUG_FLAGS; then
+          echo ""
+          echo "Build completed successfully!"
+          exit 0
+        fi
         
         echo ""
-        echo "Build completed successfully!"
+        echo "Build failed! Attempting recovery..."
+        echo ""
+        
+        # Attempt 2: Build without verbose logging
+        echo "Retry 1: Building without verbose logging..."
+        if ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace; then
+          echo ""
+          echo "Build completed successfully on retry!"
+          exit 0
+        fi
+        
+        echo ""
+        echo "Retry 1 failed! Trying with refresh dependencies..."
+        echo ""
+        
+        # Attempt 3: Build with refresh dependencies
+        if ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace --refresh-dependencies; then
+          echo ""
+          echo "Build completed successfully with refresh!"
+          exit 0
+        fi
+        
+        # All attempts failed - show diagnostics
+        echo ""
+        echo "All build attempts failed!"
+        echo ""
+        echo "Collecting diagnostic information..."
+        echo ""
+        echo "Java version:"
+        java -version
+        echo ""
+        echo "Gradle version:"
+        ./gradlew --version
+        echo ""
+        echo "Environment variables:"
+        env | grep -E "(JAVA|ANDROID|NDK|CMAKE)" || true
+        echo ""
+        echo "Build output structure:"
+        find . -type d -name "build" 2>/dev/null || true
+        echo ""
+        exit 1
         
     ############################################################################
     # STEP 13: Verify build
