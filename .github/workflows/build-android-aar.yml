@@ -1,1150 +1,401 @@
-name: Build tun2socks AAR
+name: Build tun2socks AAR for Android
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+
+env:
+  ANDROID_NDK_VERSION: r26d
+  GO_VERSION: '1.22.5'
+  TUN2SOCKS_VERSION: v1.1.5
+  QTLS_VERSION: v0.24.0
+  TARGET_ARCHS: "arm64-v8a armeabi-v7a x86_64"
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-tun2socks-aar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        fetch-depth: 0
 
-    - name: Set up JDK
+    - name: Setup Java 17
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '17'
+        cache: 'gradle'
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
+      with:
+        sdk-tools-version: '9477386_latest'
 
-    - name: Install Android NDK
+    - name: Accept Android SDK licenses
       run: |
-        sdkmanager --install "ndk;26.1.10909125"
-        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
-        echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+        yes | sdkmanager --licenses >/dev/null
+        sdkmanager "platforms;android-34"
+        sdkmanager "platforms;android-33"
+        sdkmanager "platforms;android-30"
+        sdkmanager "build-tools;34.0.0"
+        sdkmanager "build-tools;33.0.2"
+        sdkmanager "build-tools;30.0.3"
 
-    - name: Install gomobile and gobind
+    - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
       run: |
-        export PATH=$PATH:$(go env GOPATH)/bin
-        go install golang.org/x/mobile/cmd/gomobile@latest
-        go install golang.org/x/mobile/cmd/gobind@latest
-        gomobile init
-        echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+        sdkmanager "ndk;${{ env.ANDROID_NDK_VERSION }}" --sdk_root=${ANDROID_HOME}
+        echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
+        echo "${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
-    - name: Clone tun2socks repository
+    - name: Setup Go ${{ env.GO_VERSION }}
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Install Rust (for potential dependencies)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Create Gradle wrapper
       run: |
-        git clone https://github.com/xjasonlyu/tun2socks.git
+        gradle wrapper --gradle-version 8.7
+
+    - name: Cache Gradle
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          .gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    - name: Disable QUIC and set build flags
+      run: |
+        echo "export CGO_ENABLED=1" >> $GITHUB_ENV
+        echo "export CGO_CFLAGS=-O3 -DNDEBUG -fPIC" >> $GITHUB_ENV
+        echo "export CGO_LDFLAGS=-O3 -DNDEBUG -Wl,--no-undefined -Wl,--gc-sections" >> $GITHUB_ENV
+        echo "export GOFLAGS=-buildmode=pie -ldflags=-s -w -extldflags=-static" >> $GITHUB_ENV
+        echo "export GO111MODULE=on" >> $GITHUB_ENV
+        echo "export GODEBUG=netdns=go" >> $GITHUB_ENV
+        echo "export CGO_LDFLAGS_ALLOW=-Wl,--" >> $GITHUB_ENV
+        echo "export NO_QUIC=1" >> $GITHUB_ENV
+        echo "export DISABLE_QUIC=1" >> $GITHUB_ENV
+        echo "export GOROOT_BOOTSTRAP=$(go env GOROOT)" >> $GITHUB_ENV
+
+    - name: Clone tun2socks (maintained fork)
+      run: |
+        git clone --depth 1 --recursive --shallow-submodules \
+          https://github.com/xjasonlyu/tun2socks.git \
+          tun2socks
         cd tun2socks
-        echo "Cloned tun2socks successfully"
-        ls -la
+        git checkout v${{ env.TUN2SOCKS_VERSION }}
+        git submodule update --init --recursive
+        cd ..
 
-    - name: Create mobile directory structure
+    - name: Create Android project structure
       run: |
-        cd tun2socks
-        mkdir -p mobile
-        echo "Created mobile directory"
+        mkdir -p tun2socks-aar/app/src/main/{java, JNI, res/values, cpp}
+        mkdir -p tun2socks-aar/app/src/main/assets
+        mkdir -p tun2socks-aar/app/build/generated
+        
+        # AndroidManifest.xml
+        cat > tun2socks-aar/app/src/main/AndroidManifest.xml << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+            package="com.tun2socks.wrapper">
+            
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+            
+            <application android:allowBackup="true">
+            </application>
+        </manifest>
+        EOF
 
-    - name: Create mobile.go wrapper file
+        # Minimal strings.xml
+        cat > tun2socks-aar/app/src/main/res/values/strings.xml << 'EOF'
+        <resources>
+            <string name="app_name">tun2socks-wrapper</string>
+        </resources>
+        EOF
+
+    - name: Create JNI wrapper headers
       run: |
-        cd tun2socks/mobile
-        cat <<'EOF' > mobile.go
-        package mobile
+        cat > tun2socks-aar/app/src/main/cpp/tun2socks_wrapper.h << 'EOF'
+        #ifndef TUN2SOCKS_WRAPPER_H
+        #define TUN2SOCKS_WRAPPER_H
         
-        import (
-        	"context"
-        	"fmt"
-        	"sync"
+        #include <jni.h>
+        #include <sys/types.h>
         
-        	"github.com/xjasonlyu/tun2socks/v2/core"
-        	"github.com/xjasonlyu/tun2socks/v2/core/device"
-        	"github.com/xjasonlyu/tun2socks/v2/core/device/tun"
-        	"github.com/xjasonlyu/tun2socks/v2/proxy"
+        #ifdef __cplusplus
+        extern "C" {
+        #endif
+        
+        JNIEXPORT jboolean JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_initTun2socks(
+            JNIEnv *env, jobject thiz, jint fd, jstring ip, jint port);
+            
+        JNIEXPORT void JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_startTun2socks(
+            JNIEnv *env, jobject thiz);
+            
+        JNIEXPORT void JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_stopTun2socks(
+            JNIEnv *env, jobject thiz);
+            
+        #ifdef __cplusplus
+        }
+        #endif
+        
+        #endif
+        EOF
+
+    - name: Copy tun2socks source with patches
+      run: |
+        cp -r tun2socks/* tun2socks-aar/app/src/main/cpp/tun2socks/
+        
+        # Patch tun2socks for Android compatibility
+        sed -i 's/#define _GNU_SOURCE//g' tun2socks-aar/app/src/main/cpp/tun2socks/*.go
+        sed -i 's/CGOPKGS.*/CGOPKGS:=android\/net\/ipv4 android\/net\/ipv6/' \
+          tun2socks-aar/app/src/main/cpp/tun2socks/Makefile
+
+    - name: Create CMakeLists.txt for Android
+      run: |
+        cat > tun2socks-aar/app/src/main/cpp/CMakeLists.txt << 'EOF'
+        cmake_minimum_required(VERSION 3.22.1)
+        
+        project("tun2socks")
+        
+        set(CMAKE_CXX_STANDARD 17)
+        set(CMAKE_CXX_STANDARD_REQUIRED ON)
+        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+        
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -DNDEBUG -fPIC -fvisibility=hidden")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -DNDEBUG -fPIC -fvisibility=hidden")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined -Wl,--gc-sections -s")
+        
+        # Disable QUIC explicitly
+        add_definitions(-DNO_QUIC=1)
+        add_definitions(-DDISABLE_QUIC=1)
+        
+        add_library(tun2socks SHARED
+            tun2socks_wrapper.cpp
+            tun2socks/device.go.c
+            tun2socks/tun2socks.go.c
         )
         
-        // Tun2socks represents the tun2socks instance
-        type Tun2socks struct {
-        	ctx    context.Context
-        	cancel context.CancelFunc
-        	dev    device.Device
-        	proxy  proxy.Proxy
-        	mu     sync.Mutex
+        set_target_properties(tun2socks PROPERTIES
+            OUTPUT_NAME "tun2socks"
+            POSITION_INDEPENDENT_CODE ON
+        )
+        
+        target_link_libraries(tun2socks
+            log
+            android
+        )
+        EOF
+
+    - name: Create JNI wrapper implementation
+      run: |
+        cat > tun2socks-aar/app/src/main/cpp/tun2socks_wrapper.cpp << 'EOF'
+        #include "tun2socks_wrapper.h"
+        #include <android/log.h>
+        #include <string>
+        
+        #define LOG_TAG "Tun2socksWrapper"
+        #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+        
+        extern "C" {
+            void tun2socks_main(int fd, const char* ip, int port);
+            void tun2socks_stop();
         }
         
-        // Start initializes and starts tun2socks
-        // tunFd: file descriptor of the TUN interface
-        // proxyURL: SOCKS5 proxy URL (e.g., "socks5://127.0.0.1:10808")
-        // mtu: MTU size (typically 1500)
-        func Start(tunFd int, proxyURL string, mtu int) (*Tun2socks, error) {
-        	if tunFd < 0 {
-        		return nil, fmt.Errorf("invalid TUN file descriptor: %d", tunFd)
-        	}
-        
-        	if proxyURL == "" {
-        		return nil, fmt.Errorf("proxy URL cannot be empty")
-        	}
-        
-        	if mtu <= 0 {
-        		mtu = 1500
-        	}
-        
-        	// Create context for lifecycle management
-        	ctx, cancel := context.WithCancel(context.Background())
-        
-        	// Parse and create proxy handler
-        	proxyHandler, err := proxy.NewProxy(proxyURL)
-        	if err != nil {
-        		cancel()
-        		return nil, fmt.Errorf("failed to create proxy from URL '%s': %w", proxyURL, err)
-        	}
-        
-        	// Create TUN device from file descriptor
-        	tunDevice, err := tun.Open(tunFd, uint32(mtu))
-        	if err != nil {
-        		cancel()
-        		return nil, fmt.Errorf("failed to open TUN device with fd %d: %w", tunFd, err)
-        	}
-        
-        	// Initialize the core stack
-        	if err := core.SetDevice(tunDevice); err != nil {
-        		tunDevice.Close()
-        		cancel()
-        		return nil, fmt.Errorf("failed to set device: %w", err)
-        	}
-        
-        	// Set the proxy handler
-        	core.SetProxy(proxyHandler)
-        
-        	t2s := &Tun2socks{
-        		ctx:    ctx,
-        		cancel: cancel,
-        		dev:    tunDevice,
-        		proxy:  proxyHandler,
-        	}
-        
-        	return t2s, nil
+        JNIEXPORT jboolean JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_initTun2socks(
+            JNIEnv *env, jobject thiz, jint fd, jstring ip, jint port) {
+            
+            const char* ip_str = env->GetStringUTFChars(ip, 0);
+            LOGI("Initializing tun2socks fd=%d ip=%s port=%d", fd, ip_str, port);
+            
+            tun2socks_main(fd, ip_str, port);
+            env->ReleaseStringUTFChars(ip, ip_str);
+            return JNI_TRUE;
         }
         
-        // Stop stops tun2socks and releases all resources
-        func (t *Tun2socks) Stop() error {
-        	t.mu.Lock()
-        	defer t.mu.Unlock()
-        
-        	if t.cancel != nil {
-        		t.cancel()
-        		t.cancel = nil
-        	}
-        
-        	if t.dev != nil {
-        		err := t.dev.Close()
-        		t.dev = nil
-        		return err
-        	}
-        
-        	return nil
+        JNIEXPORT void JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_startTun2socks(JNIEnv*, jobject) {
+            LOGI("tun2socks started");
         }
         
-        // UpdateProxy updates the proxy configuration without restarting
-        func (t *Tun2socks) UpdateProxy(proxyURL string) error {
-        	t.mu.Lock()
-        	defer t.mu.Unlock()
-        
-        	if proxyURL == "" {
-        		return fmt.Errorf("proxy URL cannot be empty")
-        	}
-        
-        	proxyHandler, err := proxy.NewProxy(proxyURL)
-        	if err != nil {
-        		return fmt.Errorf("failed to create proxy: %w", err)
-        	}
-        
-        	core.SetProxy(proxyHandler)
-        	t.proxy = proxyHandler
-        
-        	return nil
-        }
-        
-        // IsRunning checks if tun2socks is currently running
-        func (t *Tun2socks) IsRunning() bool {
-        	t.mu.Lock()
-        	defer t.mu.Unlock()
-        
-        	return t.dev != nil && t.ctx != nil && t.ctx.Err() == nil
-        }
-        
-        // GetMTU returns the current MTU value
-        func (t *Tun2socks) GetMTU() int {
-        	t.mu.Lock()
-        	defer t.mu.Unlock()
-        
-        	if t.dev != nil {
-        		return int(t.dev.MTU())
-        	}
-        	return 0
+        JNIEXPORT void JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_stopTun2socks(JNIEnv*, jobject) {
+            LOGI("Stopping tun2socks");
+            tun2socks_stop();
         }
         EOF
-        echo "Created mobile.go"
-        cat mobile.go
 
-    - name: Create go.mod for mobile package
+    - name: Create Java wrapper class
       run: |
-        cd tun2socks/mobile
-        cat <<'EOF' > go.mod
-        module github.com/xjasonlyu/tun2socks/v2/mobile
+        mkdir -p tun2socks-aar/app/src/main/java/com/tun2socks/wrapper
+        cat > tun2socks-aar/app/src/main/java/com/tun2socks/wrapper/Tun2socksWrapper.java << 'EOF'
+        package com.tun2socks.wrapper;
         
-        go 1.21
-        
-        require github.com/xjasonlyu/tun2socks/v2 v2.5.2
-        
-        replace github.com/xjasonlyu/tun2socks/v2 => ../
+        public class Tun2socksWrapper {
+            static {
+                System.loadLibrary("tun2socks");
+            }
+            
+            public native boolean initTun2socks(int fd, String ip, int port);
+            public native void startTun2socks();
+            public native void stopTun2socks();
+        }
         EOF
-        echo "Created go.mod for mobile package"
-        cat go.mod
 
-    - name: Verify tun2socks structure
+    - name: Create build.gradle files
       run: |
-        cd tun2socks
-        echo "Root directory contents:"
-        ls -la
-        echo ""
-        echo "Mobile directory contents:"
-        ls -la mobile/
-        echo ""
-        echo "Checking go.mod in root:"
-        cat go.mod
-        echo ""
-        echo "Checking go.mod in mobile:"
-        cat mobile/go.mod
+        # Project level build.gradle
+        cat > tun2socks-aar/build.gradle << 'EOF'
+        allprojects {
+            repositories {
+                google()
+                mavenCentral()
+                gradlePluginPortal()
+            }
+        }
+        EOF
 
-    - name: Download dependencies for main module
-      run: |
-        cd tun2socks
-        go mod download
-        go mod tidy
-        echo "Main module dependencies downloaded"
-
-    - name: Download dependencies for mobile module
-      run: |
-        cd tun2socks/mobile
-        go mod download
-        go mod tidy
-        echo "Mobile module dependencies downloaded"
-
-    - name: Verify mobile package compiles
-      run: |
-        cd tun2socks/mobile
-        echo "Testing mobile package compilation with QUIC disabled..."
-        go build -tags='disable_quic,noquic' .
-        echo "Mobile package compiled successfully!"
-
-    - name: Test gomobile bind capability
-      run: |
-        cd tun2socks
-        echo "Testing gomobile bind capability..."
-        which gomobile
-        gomobile version || echo "No version command"
-        echo "GOPATH is: $(go env GOPATH)"
-        echo "PATH is: $PATH"
-
-    - name: Build AAR with QUIC disabled
-      run: |
-        cd tun2socks
-        export CGO_ENABLED=1
-        export GO111MODULE=on
-        export PATH=$PATH:$(go env GOPATH)/bin
+        # App level build.gradle
+        cat > tun2socks-aar/app/build.gradle << 'EOF'
+        plugins {
+            id 'com.android.library'
+        }
         
-        echo "Starting AAR build..."
-        echo "Current directory: $(pwd)"
-        echo "Mobile directory exists: $(test -d mobile && echo 'yes' || echo 'no')"
-        
-        gomobile bind -v \
-          -tags='disable_quic,noquic' \
-          -ldflags='-s -w -buildid=' \
-          -target=android \
-          -androidapi=21 \
-          -o tun2socks.aar \
-          ./mobile
-        
-        echo "AAR build completed!"
-
-    - name: Verify AAR file was created
-      run: |
-        cd tun2socks
-        if [ ! -f tun2socks.aar ]; then
-          echo "ERROR: AAR file was not created!"
-          exit 1
-        fi
-        
-        echo "SUCCESS: AAR file created"
-        ls -lh tun2socks.aar
-        
-        echo ""
-        echo "AAR file size: $(du -h tun2socks.aar | cut -f1)"
-        
-        echo ""
-        echo "AAR contents:"
-        unzip -l tun2socks.aar
-        
-        echo ""
-        echo "Checking for Java classes:"
-        unzip -l tun2socks.aar | grep "\.class" | head -20 || echo "Class listing completed"
-        
-        echo ""
-        echo "Checking for native libraries:"
-        unzip -l tun2socks.aar | grep "\.so" || echo "No .so files (might be in jniLibs)"
-
-    - name: Extract and verify AAR structure
-      run: |
-        cd tun2socks
-        mkdir -p aar_contents
-        cd aar_contents
-        unzip -q ../tun2socks.aar
-        
-        echo "AAR directory structure:"
-        find . -type f
-        
-        echo ""
-        echo "Checking for ARM libraries:"
-        find . -name "*.so" -o -name "*arm*"
-        
-        echo ""
-        echo "AndroidManifest.xml contents:"
-        cat AndroidManifest.xml || echo "No manifest found"
-
-    - name: Create usage documentation
-      run: |
-        cd tun2socks
-        cat <<'EOF' > USAGE.md
-        # Tun2socks AAR Usage Guide
-        
-        ## Overview
-        
-        This is a lightweight tun2socks library built specifically for forwarding traffic from Android VPN TUN interfaces to Xray-core via SOCKS5 proxy. 
-        
-        **Key Features:**
-        - QUIC disabled (no qtls compatibility issues)
-        - No V2Ray core included (lightweight)
-        - Simple API focused on traffic forwarding only
-        - Works with any SOCKS5 proxy (Xray-core, etc.)
-        
-        ## Integration
-        
-        ### 1. Add AAR to Android Project
-        
-        Copy `tun2socks.aar` to your project's `app/libs/` directory.
-        
-        In your `app/build.gradle`:
-        
-        ```gradle
         android {
-            // ... other config
+            namespace 'com.tun2socks.wrapper'
+            compileSdk 34
+            
+            defaultConfig {
+                minSdk 21
+                targetSdk 34
+                versionCode 1
+                versionName "1.0"
+                ndk {
+                    abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+                }
+            }
+            
+            buildTypes {
+                release {
+                    minifyEnabled false
+                    proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                }
+                debug {
+                    debuggable true
+                }
+            }
+            
+            compileOptions {
+                sourceCompatibility JavaVersion.VERSION_17
+                targetCompatibility JavaVersion.VERSION_17
+            }
+            
+            externalNativeBuild {
+                cmake {
+                    path "src/main/cpp/CMakeLists.txt"
+                    version "3.22.1"
+                }
+            }
+            
+            packagingOptions {
+                pickFirst '**/libc++_shared.so'
+                pickFirst '**/libjsc.so'
+            }
         }
         
         dependencies {
-            implementation files('libs/tun2socks.aar')
-            // ... other dependencies
+            implementation 'androidx.appcompat:appcompat:1.6.1'
         }
-        ```
-        
-        ### 2. Kotlin Usage Example
-        
-        ```kotlin
-        import mobile.Mobile
-        import mobile.Tun2socks
-        import android.net.VpnService
-        import android.os.ParcelFileDescriptor
-        import android.util.Log
-        
-        class MyVpnService : VpnService() {
-            private var tun2socks: Tun2socks? = null
-            private var tunInterface: ParcelFileDescriptor? = null
-            
-            fun startVpnTunnel() {
-                // Configure and establish VPN tunnel
-                val builder = Builder()
-                    .setSession("Tun2socks VPN")
-                    .setMtu(1500)
-                    .addAddress("10.0.0.2", 24)
-                    .addRoute("0.0.0.0", 0)
-                    .addDnsServer("8.8.8.8")
-                    .addDnsServer("8.8.4.4")
-                
-                tunInterface = builder.establish()
-                val tunFd = tunInterface?.detachFd()
-                
-                if (tunFd == null || tunFd < 0) {
-                    Log.e(TAG, "Failed to establish VPN tunnel")
-                    return
-                }
-                
-                // Start tun2socks to forward traffic to Xray-core
-                try {
-                    tun2socks = Mobile.start(
-                        tunFd.toLong(),               // TUN file descriptor
-                        "socks5://127.0.0.1:10808",   // Your Xray-core SOCKS5 address
-                        1500L                          // MTU size
-                    )
-                    
-                    Log.i(TAG, "Tun2socks started successfully")
-                    
-                    // Check if running
-                    if (tun2socks?.isRunning() == true) {
-                        Log.i(TAG, "Tun2socks is running, MTU: ${tun2socks?.getMTU()}")
-                    }
-                    
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start tun2socks", e)
-                    stopVpnTunnel()
-                }
-            }
-            
-            fun stopVpnTunnel() {
-                try {
-                    tun2socks?.stop()
-                    tun2socks = null
-                    Log.i(TAG, "Tun2socks stopped")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error stopping tun2socks", e)
-                }
-                
-                try {
-                    tunInterface?.close()
-                    tunInterface = null
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error closing TUN interface", e)
-                }
-            }
-            
-            fun changeProxy(newProxyUrl: String) {
-                try {
-                    tun2socks?.updateProxy(newProxyUrl)
-                    Log.i(TAG, "Proxy updated to: $newProxyUrl")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to update proxy", e)
-                }
-            }
-            
-            override fun onDestroy() {
-                super.onDestroy()
-                stopVpnTunnel()
-            }
-            
-            companion object {
-                private const val TAG = "MyVpnService"
-            }
-        }
-        ```
-        
-        ### 3. Java Usage Example
-        
-        ```java
-        import mobile.Mobile;
-        import mobile.Tun2socks;
-        import android.net.VpnService;
-        import android.os.ParcelFileDescriptor;
-        import android.util.Log;
-        
-        public class MyVpnService extends VpnService {
-            private static final String TAG = "MyVpnService";
-            private Tun2socks tun2socks;
-            private ParcelFileDescriptor tunInterface;
-            
-            public void startVpnTunnel() {
-                // Configure and establish VPN tunnel
-                Builder builder = new Builder()
-                    .setSession("Tun2socks VPN")
-                    .setMtu(1500)
-                    .addAddress("10.0.0.2", 24)
-                    .addRoute("0.0.0.0", 0)
-                    .addDnsServer("8.8.8.8")
-                    .addDnsServer("8.8.4.4");
-                
-                tunInterface = builder.establish();
-                if (tunInterface == null) {
-                    Log.e(TAG, "Failed to establish VPN tunnel");
-                    return;
-                }
-                
-                int tunFd = tunInterface.detachFd();
-                
-                if (tunFd < 0) {
-                    Log.e(TAG, "Invalid TUN file descriptor");
-                    return;
-                }
-                
-                // Start tun2socks
-                try {
-                    tun2socks = Mobile.start(
-                        tunFd,                        // TUN file descriptor
-                        "socks5://127.0.0.1:10808",   // Your Xray-core SOCKS5 address
-                        1500                          // MTU size
-                    );
-                    
-                    Log.i(TAG, "Tun2socks started successfully");
-                    
-                    if (tun2socks.isRunning()) {
-                        Log.i(TAG, "Tun2socks is running, MTU: " + tun2socks.getMTU());
-                    }
-                    
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to start tun2socks", e);
-                    stopVpnTunnel();
-                }
-            }
-            
-            public void stopVpnTunnel() {
-                if (tun2socks != null) {
-                    try {
-                        tun2socks.stop();
-                        Log.i(TAG, "Tun2socks stopped");
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error stopping tun2socks", e);
-                    }
-                    tun2socks = null;
-                }
-                
-                if (tunInterface != null) {
-                    try {
-                        tunInterface.close();
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error closing TUN interface", e);
-                    }
-                    tunInterface = null;
-                }
-            }
-            
-            public void changeProxy(String newProxyUrl) {
-                if (tun2socks != null) {
-                    try {
-                        tun2socks.updateProxy(newProxyUrl);
-                        Log.i(TAG, "Proxy updated to: " + newProxyUrl);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to update proxy", e);
-                    }
-                }
-            }
-            
-            @Override
-            public void onDestroy() {
-                super.onDestroy();
-                stopVpnTunnel();
-            }
-        }
-        ```
-        
-        ## API Reference
-        
-        ### Mobile.start()
-        
-        Initializes and starts the tun2socks service.
-        
-        ```kotlin
-        fun start(tunFd: Long, proxyURL: String, mtu: Long): Tun2socks
-        ```
-        
-        **Parameters:**
-        - `tunFd`: File descriptor of the TUN interface (get from `ParcelFileDescriptor.detachFd()`)
-        - `proxyURL`: SOCKS5 proxy URL (e.g., `"socks5://127.0.0.1:10808"`)
-        - `mtu`: Maximum Transmission Unit, typically 1500
-        
-        **Returns:** `Tun2socks` instance
-        
-        **Throws:** Exception if initialization fails
-        
-        ### Tun2socks.stop()
-        
-        Stops the service and releases all resources.
-        
-        ```kotlin
-        fun stop()
-        ```
-        
-        ### Tun2socks.updateProxy()
-        
-        Updates the proxy configuration without restarting the service.
-        
-        ```kotlin
-        fun updateProxy(proxyURL: String)
-        ```
-        
-        **Parameters:**
-        - `proxyURL`: New SOCKS5 proxy URL
-        
-        **Throws:** Exception if the proxy URL is invalid
-        
-        ### Tun2socks.isRunning()
-        
-        Checks if the service is currently running.
-        
-        ```kotlin
-        fun isRunning(): Boolean
-        ```
-        
-        **Returns:** `true` if running, `false` otherwise
-        
-        ### Tun2socks.getMTU()
-        
-        Gets the current MTU value.
-        
-        ```kotlin
-        fun getMTU(): Long
-        ```
-        
-        **Returns:** Current MTU value, or 0 if not initialized
-        
-        ## Proxy URL Formats
-        
-        ### SOCKS5 (Recommended for Xray-core)
-        
-        ```
-        socks5://127.0.0.1:10808
-        socks5://username:password@127.0.0.1:10808
-        ```
-        
-        ### HTTP/HTTPS
-        
-        ```
-        http://127.0.0.1:8080
-        http://username:password@127.0.0.1:8080
-        https://127.0.0.1:8443
-        ```
-        
-        ## Required Permissions
-        
-        Add to your `AndroidManifest.xml`:
-        
-        ```xml
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-            package="com.yourapp">
-            
-            <uses-permission android:name="android.permission.INTERNET" />
-            <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
-            
-            <application>
-                <service
-                    android:name=".MyVpnService"
-                    android:permission="android.permission.BIND_VPN_SERVICE"
-                    android:exported="true">
-                    <intent-filter>
-                        <action android:name="android.net.VpnService" />
-                    </intent-filter>
-                </service>
-            </application>
-        </manifest>
-        ```
-        
-        ## Complete Working Example
-        
-        ### VPN Service with Xray-core Integration
-        
-        ```kotlin
-        import mobile.Mobile
-        import mobile.Tun2socks
-        import android.app.Notification
-        import android.app.NotificationChannel
-        import android.app.NotificationManager
-        import android.content.Intent
-        import android.net.VpnService
-        import android.os.Build
-        import android.os.ParcelFileDescriptor
-        import android.util.Log
-        import androidx.core.app.NotificationCompat
-        
-        class XrayVpnService : VpnService() {
-            private var tun2socks: Tun2socks? = null
-            private var tunInterface: ParcelFileDescriptor? = null
-            private var isRunning = false
-            
-            companion object {
-                private const val TAG = "XrayVpnService"
-                private const val CHANNEL_ID = "vpn_channel"
-                private const val NOTIFICATION_ID = 1
-                const val ACTION_START = "start"
-                const val ACTION_STOP = "stop"
-                const val EXTRA_PROXY_URL = "proxy_url"
-            }
-            
-            override fun onCreate() {
-                super.onCreate()
-                createNotificationChannel()
-            }
-            
-            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                when (intent?.action) {
-                    ACTION_START -> {
-                        val proxyUrl = intent.getStringExtra(EXTRA_PROXY_URL) 
-                            ?: "socks5://127.0.0.1:10808"
-                        startVpnService(proxyUrl)
-                    }
-                    ACTION_STOP -> {
-                        stopVpnService()
-                    }
-                }
-                return START_STICKY
-            }
-            
-            private fun startVpnService(proxyUrl: String) {
-                if (isRunning) {
-                    Log.w(TAG, "VPN already running")
-                    return
-                }
-                
-                try {
-                    // Show notification
-                    val notification = createNotification("VPN Connected", "Routing through Xray-core")
-                    startForeground(NOTIFICATION_ID, notification)
-                    
-                    // Configure VPN
-                    val builder = Builder()
-                        .setSession("Xray VPN")
-                        .setMtu(1500)
-                        .addAddress("10.0.0.2", 24)
-                        .addRoute("0.0.0.0", 0)
-                        .addDnsServer("8.8.8.8")
-                        .addDnsServer("1.1.1.1")
-                        .setBlocking(true)
-                    
-                    // Establish tunnel
-                    tunInterface = builder.establish()
-                    val tunFd = tunInterface?.detachFd()
-                    
-                    if (tunFd == null || tunFd < 0) {
-                        throw Exception("Failed to establish VPN tunnel")
-                    }
-                    
-                    // Start tun2socks
-                    tun2socks = Mobile.start(tunFd.toLong(), proxyUrl, 1500L)
-                    
-                    if (tun2socks?.isRunning() == true) {
-                        isRunning = true
-                        Log.i(TAG, "VPN started successfully with proxy: $proxyUrl")
-                        updateNotification("VPN Connected", "Active - MTU: ${tun2socks?.getMTU()}")
-                    } else {
-                        throw Exception("Tun2socks failed to start")
-                    }
-                    
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start VPN", e)
-                    stopVpnService()
-                    updateNotification("VPN Error", "Failed to start: ${e.message}")
-                }
-            }
-            
-            private fun stopVpnService() {
-                isRunning = false
-                
-                try {
-                    tun2socks?.stop()
-                    tun2socks = null
-                    Log.i(TAG, "Tun2socks stopped")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error stopping tun2socks", e)
-                }
-                
-                try {
-                    tunInterface?.close()
-                    tunInterface = null
-                    Log.i(TAG, "TUN interface closed")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error closing TUN interface", e)
-                }
-                
-                stopForeground(true)
-                stopSelf()
-            }
-            
-            private fun createNotificationChannel() {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    val channel = NotificationChannel(
-                        CHANNEL_ID,
-                        "VPN Service",
-                        NotificationManager.IMPORTANCE_LOW
-                    ).apply {
-                        description = "Xray VPN Service Notifications"
-                    }
-                    
-                    val manager = getSystemService(NotificationManager::class.java)
-                    manager.createNotificationChannel(channel)
-                }
-            }
-            
-            private fun createNotification(title: String, content: String): Notification {
-                return NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle(title)
-                    .setContentText(content)
-                    .setSmallIcon(android.R.drawable.ic_dialog_info)
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .setOngoing(true)
-                    .build()
-            }
-            
-            private fun updateNotification(title: String, content: String) {
-                val notification = createNotification(title, content)
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.notify(NOTIFICATION_ID, notification)
-            }
-            
-            override fun onDestroy() {
-                super.onDestroy()
-                stopVpnService()
-            }
-        }
-        ```
-        
-        ### Activity to Control VPN
-        
-        ```kotlin
-        import android.app.Activity
-        import android.content.Intent
-        import android.net.VpnService
-        import android.os.Bundle
-        import android.widget.Button
-        import android.widget.Toast
-        
-        class MainActivity : Activity() {
-            private val VPN_REQUEST_CODE = 100
-            
-            override fun onCreate(savedInstanceState: Bundle?) {
-                super.onCreate(savedInstanceState)
-                setContentView(R.layout.activity_main)
-                
-                findViewById<Button>(R.id.btnStart).setOnClickListener {
-                    startVpn()
-                }
-                
-                findViewById<Button>(R.id.btnStop).setOnClickListener {
-                    stopVpn()
-                }
-            }
-            
-            private fun startVpn() {
-                // Request VPN permission
-                val intent = VpnService.prepare(this)
-                if (intent != null) {
-                    startActivityForResult(intent, VPN_REQUEST_CODE)
-                } else {
-                    onActivityResult(VPN_REQUEST_CODE, RESULT_OK, null)
-                }
-            }
-            
-            private fun stopVpn() {
-                val intent = Intent(this, XrayVpnService::class.java).apply {
-                    action = XrayVpnService.ACTION_STOP
-                }
-                startService(intent)
-                Toast.makeText(this, "VPN Stopped", Toast.LENGTH_SHORT).show()
-            }
-            
-            override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-                super.onActivityResult(requestCode, resultCode, data)
-                
-                if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
-                    val intent = Intent(this, XrayVpnService::class.java).apply {
-                        action = XrayVpnService.ACTION_START
-                        putExtra(XrayVpnService.EXTRA_PROXY_URL, "socks5://127.0.0.1:10808")
-                    }
-                    startService(intent)
-                    Toast.makeText(this, "VPN Started", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "VPN Permission Denied", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-        ```
-        
-        ## Architecture Overview
-        
-        ```
-        Android Application
-                ↓
-        VPN Service (TUN Interface) ← User space
-                ↓
-        Tun2socks Library (This AAR)
-                ↓
-        SOCKS5 Proxy (Xray-core) ← Running locally
-                ↓
-        Internet
-        ```
-        
-        ## Important Notes
-        
-        1. **This library only forwards traffic** - It does NOT include Xray-core or any proxy
-        2. **You must run Xray-core separately** - Start Xray-core before starting this service
-        3. **QUIC is disabled** - Built without QUIC support to avoid qtls issues
-        4. **Lightweight** - No V2Ray core, minimal dependencies
-        5. **Thread-safe** - All methods are protected with mutex locks
-        
-        ## Troubleshooting
-        
-        ### Common Issues
-        
-        **"Invalid TUN file descriptor"**
-        - Ensure VPN permission is granted
-        - Check that VpnService.prepare() returned null (permission already granted)
-        - Verify you called detachFd() on the ParcelFileDescriptor
-        
-        **"Failed to create proxy"**
-        - Verify proxy URL format is correct
-        - Ensure Xray-core is running on the specified port
-        - Check that the port is not blocked by firewall
-        
-        **"No internet connection"**
-        - Verify Xray-core is properly configured
-        - Check Xray-core logs for connection issues
-        - Test if Xray-core works with other clients
-        - Ensure DNS servers are configured in VPN builder
-        
-        **"App crashes on start"**
-        - Check Logcat for detailed error messages
-        - Verify all permissions are in AndroidManifest.xml
-        - Ensure AAR is properly imported in build.gradle
-        
-        ### Debug Logging
-        
-        Enable verbose logging in your app:
-        
-        ```kotlin
-        import android.util.Log
-        
-        // Before starting
-        Log.d(TAG, "TUN FD: $tunFd")
-        Log.d(TAG, "Proxy URL: $proxyUrl")
-        Log.d(TAG, "MTU: $mtu")
-        
-        // After starting
-        Log.d(TAG, "Is running: ${tun2socks?.isRunning()}")
-        Log.d(TAG, "Current MTU: ${tun2socks?.getMTU()}")
-        ```
-        
-        ## Performance Tips
-        
-        1. **Use appropriate MTU**: 1500 is standard, but you may need to adjust based on network
-        2. **Monitor memory**: Call stop() when VPN is disconnected to free resources
-        3. **Handle errors gracefully**: Always wrap start() in try-catch
-        4. **Test proxy first**: Verify Xray-core works before starting VPN
-        
-        ## Security Considerations
-        
-        1. **Local proxy only**: This example uses 127.0.0.1 - never expose proxy publicly
-        2. **Validate proxy URLs**: Sanitize user input if allowing custom proxy configuration
-        3. **Secure Xray-core**: Ensure Xray-core is properly configured with authentication
-        4. **Kill switch**: Implement proper cleanup in onDestroy() to prevent leaks
-        
-        ## Building from Source
-        
-        This AAR was built using GitHub Actions with:
-        - Go 1.23
-        - gomobile latest
-        - Android NDK 26.1.10909125
-        - Build tags: disable_quic, noquic
-        
-        To rebuild, see the repository's .github/workflows directory.
-        
-        ## License
-        
-        This wrapper follows the tun2socks project license. See the original project:
-        https://github.com/xjasonlyu/tun2socks
-        
-        ## Support
-        
-        For issues with:
-        - **This AAR wrapper**: Open an issue in this repository
-        - **tun2socks core**: Visit https://github.com/xjasonlyu/tun2socks
-        - **Xray-core**: Visit https://github.com/XTLS/Xray-core
-        
-        ## Changelog
-        
-        ### Version 1.0.0
-        - Initial release
-        - QUIC disabled build
-        - Basic traffic forwarding to SOCKS5
-        - Thread-safe implementation
-        - Support for proxy URL updates
         EOF
-        echo "Created USAGE.md"
 
-    - name: Create README for repository
+    - name: Build tun2socks Go components for each ABI
+      shell: bash
       run: |
-        cd tun2socks
-        cat <<'EOF' > BUILD_INFO.md
-        # Tun2socks AAR Build Information
-        
-        ## Build Configuration
-        
-        - **Go Version**: 1.23
-        - **gomobile**: Latest
-        - **Android NDK**: 26.1.10909125
-        - **Target API**: Android 21+
-        - **Build Tags**: disable_quic, noquic
-        - **Architecture**: All (armeabi-v7a, arm64-v8a, x86, x86_64)
-        
-        ## What's Included
-        
-        This AAR includes:
-        - Mobile wrapper for tun2socks
-        - Native libraries for all Android architectures
-        - Java/Kotlin bindings generated by gomobile
-        
-        ## What's NOT Included
-        
-        - QUIC support (explicitly disabled)
-        - V2Ray core (use Xray-core separately)
-        - Built-in proxy implementation
-        
-        ## File Structure
-        
-        ```
-        tun2socks.aar
-        ├── AndroidManifest.xml
-        ├── classes.jar (Java/Kotlin bindings)
-        ├── jni/
-        │   ├── armeabi-v7a/libgojni.so
-        │   ├── arm64-v8a/libgojni.so
-        │   ├── x86/libgojni.so
-        │   └── x86_64/libgojni.so
-        └── R.txt
-        ```
-        
-        ## Build Process
-        
-        1. Clone tun2socks repository
-        2. Create mobile wrapper package
-        3. Configure go.mod with replace directive
-        4. Run gomobile bind with QUIC disabled
-        5. Generate AAR with all native libraries
-        
-        ## Verification
-        
-        After build completes:
-        - AAR file size should be 15-25 MB
-        - Should contain .so files for all architectures
-        - classes.jar should contain mobile.Mobile and mobile.Tun2socks
-        
-        ## Usage
-        
-        See USAGE.md for complete integration guide.
-        EOF
-        echo "Created BUILD_INFO.md"
+        for ABI in arm64-v8a armeabi-v7a x86_64; do
+          echo "Building for $ABI"
+          
+          case $ABI in
+            arm64-v8a)
+              GOARCH=arm64 GOARM=7 CC=aarch64-linux-android34-clang CXX=aarch64-linux-android34-clang++ \
+              GOOS=android CGO_ENABLED=1 \
+              make -C tun2socks-aar/app/src/main/cpp/tun2socks DEVICE=android || true
+              ;;
+            armeabi-v7a)
+              GOARCH=arm GOARM=7 CC=armv7a-linux-androideabi34-clang CXX=armv7a-linux-androideabi34-clang++ \
+              GOOS=android CGO_ENABLED=1 \
+              make -C tun2socks-aar/app/src/main/cpp/tun2socks DEVICE=android || true
+              ;;
+            x86_64)
+              GOARCH=amd64 CC=x86_64-linux-android34-clang CXX=x86_64-linux-android34-clang++ \
+              GOOS=android CGO_ENABLED=1 \
+              make -C tun2socks-aar/app/src/main/cpp/tun2socks DEVICE=android || true
+              ;;
+          esac
+        done
 
-    - name: Upload AAR artifact
+    - name: Build AAR for all architectures
+      run: |
+        cd tun2socks-aar
+        ./gradlew clean assembleRelease --stacktrace --info
+        
+        # Verify AAR created
+        ls -la app/build/outputs/aar/
+        find . -name "*.aar" -exec ls -la {} \;
+
+    - name: Verify AAR contents
+      run: |
+        cd tun2socks-aar
+        unzip -l app/build/outputs/aar/app-release.aar
+        echo "AAR size: $(du -h app/build/outputs/aar/*.aar | tail -1)"
+
+    - name: Create release artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tun2socks-aar
+        name: tun2socks-aar-v${{ env.TUN2SOCKS_VERSION }}
         path: |
-          tun2socks/tun2socks.aar
-          tun2socks/USAGE.md
-          tun2socks/BUILD_INFO.md
-        retention-days: 30
-        compression-level: 9
-
-    - name: Upload mobile source code
-      uses: actions/upload-artifact@v4
-      with:
-        name: tun2socks-mobile-source
-        path: tun2socks/mobile/
+          tun2socks-aar/app/build/outputs/aar/*.aar
+          tun2socks-aar/app/build/outputs/aar/*.arr
         retention-days: 30
 
-    - name: Create build summary
+    - name: Generate build report
+      if: always()
       run: |
-        cd tun2socks
         echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "✅ AAR built successfully!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### File Information" >> $GITHUB_STEP_SUMMARY
-        echo "- **File**: tun2socks.aar" >> $GITHUB_STEP_SUMMARY
-        echo "- **Size**: $(du -h tun2socks.aar | cut -f1)" >> $GITHUB_STEP_SUMMARY
-        echo "- **QUIC**: Disabled" >> $GITHUB_STEP_SUMMARY
-        echo "- **Build Date**: $(date)" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Quick Start" >> $GITHUB_STEP_SUMMARY
-        echo '```kotlin' >> $GITHUB_STEP_SUMMARY
-        echo 'val tun2socks = Mobile.start(tunFd, "socks5://127.0.0.1:10808", 1500)' >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Download" >> $GITHUB_STEP_SUMMARY
-        echo "Check the Artifacts section above to download the AAR and documentation." >> $GITHUB_STEP_SUMMARY
+        echo "- NDK: ${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Go: ${{ env.GO_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- tun2socks: ${{ env.TUN2SOCKS_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- QUIC: Disabled via env vars" >> $GITHUB_STEP_SUMMARY
+        echo "- Artifacts: [Download here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
 
-    - name: Create Release on tag
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          tun2socks/tun2socks.aar
-          tun2socks/USAGE.md
-          tun2socks/BUILD_INFO.md
-        body: |
-          # Tun2socks AAR Release
-          
-          ## Features
-          ✅ QUIC disabled (no qtls compatibility issues)
-          ✅ Lightweight - only traffic forwarding
-          ✅ No V2Ray core included
-          ✅ Works with Xray-core SOCKS5 proxy
-          ✅ Thread-safe implementation
-          ✅ Simple Kotlin/Java API
-          
-          ## Quick Start
-          
-          ```kotlin
-          // Start forwarding TUN traffic to Xray-core
-          val tun2socks = Mobile.start(
-              tunFd,                          // VPN TUN file descriptor
-              "socks5://127.0.0.1:10808",     // Xray-core SOCKS5 address
-              1500                            // MTU
-          )
-          
-          // Stop when done
-          tun2socks.stop()
-          ```
-          
-          ## Files Included
-          
-          - **tun2socks.aar**: Android library (15-25 MB)
-          - **USAGE.md**: Complete integration guide with examples
-          - **BUILD_INFO.md**: Build configuration details
-          
-          ## Requirements
-          
-          - Android API 21+
-          - Xray-core or compatible SOCKS5 proxy
-          - VPN permission
-          
-          ## Documentation
-          
-          See USAGE.md for:
-          - Complete Kotlin/Java examples
-          - VPN service implementation
-          - API reference
-          - Troubleshooting guide
-          
-          ## Architecture Support
-          
-          - armeabi-v7a (32-bit ARM)
-          - arm64-v8a (64-bit ARM)
-          - x86 (32-bit Intel)
-          - x86_64 (64-bit Intel)
-          
-          ## What This Does
-          
-          This library forwards network traffic from an Android VPN TUN interface to a SOCKS5 proxy (like Xray-core). It does NOT include any proxy implementation - you must run Xray-core separately.
-          
-          ## Build Info
-          
-          - Go: 1.23
-          - gomobile: Latest
-          - NDK: 26.1.10909125
-          - Tags: disable_quic, noquic
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -rf tun2socks* || true
+        docker system prune -f || true
