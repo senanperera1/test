@@ -33,7 +33,6 @@ jobs:
     
     - name: Install NDK r27 (16KB Page Size Support)
       run: |
-        # NDK r26+ required for 16KB page size
         sdkmanager --install "ndk;27.0.12077973" "platforms;android-35"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
         echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
@@ -50,20 +49,15 @@ jobs:
     - name: Initialize gomobile with NDK r27
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
-        # Modern gomobile doesn't use -ndk flag, just set env vars
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
         gomobile init
     
     - name: Patch for 16KB Page Size
       run: |
-        # Update gomobile bind command to use android-35 (supports 16KB)
-        # The repo's Makefile needs to target API 35
         if [ -f "Makefile" ]; then
           sed -i 's/-androidapi [0-9]*/-androidapi 35/g' Makefile
           sed -i 's/-androidapi=[0-9]*/-androidapi=35/g' Makefile
         fi
-        
-        # Also check build.gradle if exists
         if [ -f "build.gradle" ]; then
           sed -i 's/compileSdkVersion [0-9]*/compileSdkVersion 35/g' build.gradle
           sed -i 's/targetSdkVersion [0-9]*/targetSdkVersion 35/g' build.gradle
@@ -74,25 +68,49 @@ jobs:
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
-        
-        # Build with explicit 16KB page size support
+
         if [ -f "Makefile" ]; then
           make lib
-        elif [ -f "build.gradle" ]; then
-          ./gradlew assembleRelease
+        elif [ -f "build.gradle" ] || [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ] || [ -f "gradlew" ]; then
+          [ -f gradlew ] && chmod +x gradlew || true
+          ./gradlew assembleRelease --no-daemon --stacktrace
         else
-          # Manual build if no build system found
-          cd Xray-core || cd xray-core || cd core || echo "Finding source..."
-          
-          gomobile bind -v \
-            -target=android \
-            -androidapi=35 \
-            -ldflags="-s -w" \
-            -tags="android" \
-            -o libxray.aar \
-            -javapkg=io.github.2dust.AndroidLibXrayLite \
-            ./infra/control
+          echo "Manual gomobile bind fallback…"
+          if [ -d "Xray-core" ]; then
+            cd Xray-core
+          elif [ -d "xray-core" ]; then
+            cd xray-core
+          elif [ -d "core" ]; then
+            cd core
+          else
+            echo "No core directory found, skipping gomobile bind"
+            SKIP_BIND=1
+          fi
+          if [ -z "${SKIP_BIND}" ]; then
+            if [ -d "infra/control" ] && \
+               grep -R "^[[:space:]]*func[[:space:]]\([A-Z]\)" infra/control >/dev/null 2>&1; then
+              gomobile bind -v \
+                -target=android \
+                -androidapi=35 \
+                -ldflags="-s -w" \
+                -tags="android" \
+                -o libxray.aar \
+                -javapkg=io.github.2dust.AndroidLibXrayLite \
+                ./infra/control
+            else
+              echo "Skipping gomobile bind: infra/control missing or no exported names"
+            fi
+          fi
         fi
+
+        mkdir -p build
+        find . -name "*.aar" -type f -exec cp {} build/ \;
+        if ! ls build/*.aar >/dev/null 2>&1; then
+          echo "❌ No AAR found!"
+          exit 1
+        fi
+        echo "✅ AAR built successfully!"
+        ls -lh build/
     
     - name: Find and verify AAR
       run: |
@@ -100,20 +118,14 @@ jobs:
         find . -name "*.aar" -type f | while read aar; do
           echo "Found: $aar"
           echo "Size: $(du -h "$aar" | cut -f1)"
-          
-          # Verify it's built for 16KB page size (check for android-35 target)
           unzip -l "$aar" | grep -i "jni" || echo "No native libs info"
         done
-        
-        # Copy to standard location
         mkdir -p build
         find . -name "*.aar" -type f -exec cp {} build/ \;
-        
         if [ ! -f build/*.aar ]; then
           echo "❌ No AAR found!"
           exit 1
         fi
-        
         echo "✅ AAR built successfully!"
         ls -lh build/
     
@@ -121,271 +133,21 @@ jobs:
       run: |
         cat > ANDROID15_COMPATIBILITY.md << 'EOF'
         # Android 15+ (16KB Page Size) Compatibility
-        
-        ## What's the Issue?
-        
-        Starting with Android 15, Google introduced support for 16KB page size kernels:
-        - **Old way**: 4KB page size (worked on all devices)
-        - **New way**: 16KB page size (required for some Android 15+ devices)
-        - **Problem**: Apps built with 4KB only will CRASH on 16KB devices
-        
-        ## Error You'd See Without This Fix:
-        ```
-        CANNOT LINK EXECUTABLE: couldn't load library "libxray.so"
-        page size mismatch: expected 16384, actual 4096
-        ```
-        
-        ## How This Build Fixes It:
-        
-        1. ✅ Uses NDK r27 (supports both 4KB and 16KB)
-        2. ✅ Targets Android API 35 (has 16KB support)
-        3. ✅ Built with `-androidapi=35` flag
-        4. ✅ Compatible with BOTH 4KB and 16KB devices
-        
-        ## Build Details:
-        - **NDK Version**: r27.0.12077973
-        - **Target API**: 35 (Android 15+)
-        - **Min API**: 21 (Android 5.0+)
-        - **Go Version**: 1.23
-        
-        ## Testing Compatibility:
-        
-        ### Check Page Size on Device:
-        ```bash
-        adb shell getconf PAGE_SIZE
-        # Output: 16384 (16KB) or 4096 (4KB)
-        ```
-        
-        ### Verify AAR Native Libs:
-        ```bash
-        unzip -l libxray.aar | grep "\.so$"
-        # Should show libs for: arm64-v8a, armeabi-v7a, x86, x86_64
-        ```
-        
-        ## Device Compatibility Matrix:
-        
-        | Device Type | Page Size | This Build | Old Builds |
-        |-------------|-----------|------------|------------|
-        | Android 14 and below | 4KB | ✅ Works | ✅ Works |
-        | Android 15+ (Pixel 9, etc.) | 16KB | ✅ Works | ❌ Crashes |
-        | Android 15+ (other devices) | 4KB | ✅ Works | ✅ Works |
-        
-        ## References:
-        - [Google's 16KB Page Size Guide](https://developer.android.com/guide/practices/page-sizes)
-        - [NDK r26+ Release Notes](https://github.com/android/ndk/wiki/Changelog-r26)
+        ...
         EOF
     
     - name: Create usage guide
       run: |
         cat > USAGE_GUIDE.md << 'EOF'
         # AndroidLibXrayLite Usage Guide
-        
-        ## What You Get:
-        - ✅ Xray Core (full V2Ray/Xray support)
-        - ✅ tun2socks functionality
-        - ✅ SOCKS5 proxy support
-        - ✅ Works on Android 15+ (16KB page size)
-        
-        ## Two Ways to Use:
-        
-        ### Option 1: Use Embedded Xray Core (All-in-One)
-        
-        If you DON'T have external XRayCore, use the built-in one:
-        
-        ```kotlin
-        import libv2ray.Libv2ray
-        
-        val config = """{
-          "log": {"loglevel": "warning"},
-          "inbounds": [{
-            "port": 10808,
-            "protocol": "socks",
-            "settings": {"udp": true}
-          }],
-          "outbounds": [{
-            "protocol": "vmess",
-            "settings": {
-              "vnext": [{
-                "address": "your-server.com",
-                "port": 443,
-                "users": [{"id": "your-uuid", "security": "auto"}]
-              }]
-            }
-          }]
-        }"""
-        
-        // Start the embedded Xray core
-        Libv2ray.start(config)
-        
-        // Then start tun2socks pointing to the embedded core
-        Libv2ray.tunStart(tunFd, "10808") // Points to embedded core's SOCKS5
-        ```
-        
-        ### Option 2: Use Only tun2socks (Connect to Your XRayCore)
-        
-        If you ALREADY have XRayCore running, use only tun2socks:
-        
-        ```kotlin
-        import libv2ray.Libv2ray
-        
-        class MyVpnService : VpnService() {
-            
-            private var tunInterface: ParcelFileDescriptor? = null
-            
-            fun startVpn() {
-                // Your external XRayCore should already be running
-                // and listening on 127.0.0.1:10808 (SOCKS5)
-                
-                // Create TUN interface
-                val builder = Builder()
-                    .setSession("My VPN")
-                    .addAddress("10.0.0.2", 24)
-                    .addRoute("0.0.0.0", 0)
-                    .addDnsServer("8.8.8.8")
-                    .setMtu(1500)
-                
-                tunInterface = builder.establish()
-                val tunFd = tunInterface?.fd ?: return
-                
-                // Start ONLY tun2socks (not the core)
-                // This routes TUN → your external XRayCore
-                Libv2ray.tunStart(tunFd, "127.0.0.1:10808")
-                
-                Log.i("VPN", "tun2socks started, routing to external XRayCore")
-            }
-            
-            fun stopVpn() {
-                Libv2ray.tunStop()
-                tunInterface?.close()
-                tunInterface = null
-            }
-        }
-        ```
-        
-        ## Your Use Case (Based on Your Question):
-        
-        Since you **already have XRayCore**, use **Option 2**:
-        
-        ```
-        [Your App]
-            ↓
-        [AndroidLibXrayLite.aar]
-            ├─ Embedded Xray Core (NOT USED)
-            └─ tun2socks (USED) → Routes to your external core
-                ↓
-        [Your XRayCore - 127.0.0.1:10808]
-            ↓
-        [Internet]
-        ```
-        
-        ## Integration:
-        
-        ### 1. Add to build.gradle:
-        ```gradle
-        dependencies {
-            implementation(files("libs/libxray.aar"))
-        }
-        ```
-        
-        ### 2. Add permissions (AndroidManifest.xml):
-        ```xml
-        <uses-permission android:name="android.permission.INTERNET" />
-        <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-        
-        <service
-            android:name=".MyVpnService"
-            android:permission="android.permission.BIND_VPN_SERVICE">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-        </service>
-        ```
-        
-        ### 3. Request VPN permission:
-        ```kotlin
-        val intent = VpnService.prepare(context)
-        if (intent != null) {
-            startActivityForResult(intent, VPN_REQUEST_CODE)
-        } else {
-            startVpn() // Already have permission
-        }
-        ```
-        
-        ## API Reference:
-        
-        ```kotlin
-        // Core control (if using embedded core)
-        Libv2ray.start(configJson: String): Boolean
-        Libv2ray.stop()
-        Libv2ray.isRunning(): Boolean
-        
-        // tun2socks control
-        Libv2ray.tunStart(fd: Int, socksAddr: String): Boolean
-        Libv2ray.tunStop()
-        
-        // Stats
-        Libv2ray.queryStats(): String
-        ```
-        
-        ## Troubleshooting:
-        
-        ### "couldn't load library" or "page size mismatch"
-        - ✅ This build fixes it (16KB page size support)
-        - Verify you're using the AAR from this workflow
-        
-        ### tun2socks not connecting
-        - Verify your XRayCore is running: `adb shell netstat | grep 10808`
-        - Check logs: `adb logcat -s "Libv2ray:*" "Go:*"`
-        
-        ### Two cores conflict
-        - Solution: Don't start the embedded core (just use `tunStart()`)
-        - Only call `Libv2ray.start()` if you need the embedded core
-        
-        ## Performance:
-        - AAR size: ~15MB (includes full Xray core)
-        - RAM usage: ~30MB (if only using tun2socks, not starting core)
-        - RAM usage: ~60MB (if using embedded core too)
+        ...
         EOF
     
     - name: Create quick start script
       run: |
         cat > QUICK_START.kt << 'EOF'
         // QUICK START: tun2socks to External XRayCore
-        
-        import android.net.VpnService
-        import android.os.ParcelFileDescriptor
-        import libv2ray.Libv2ray
-        
-        class SimpleVpnService : VpnService() {
-            
-            private var tunInterface: ParcelFileDescriptor? = null
-            
-            fun start() {
-                // 1. Create TUN interface
-                tunInterface = Builder()
-                    .setSession("Simple VPN")
-                    .addAddress("10.0.0.2", 24)
-                    .addRoute("0.0.0.0", 0)
-                    .addDnsServer("8.8.8.8")
-                    .establish()
-                
-                val fd = tunInterface?.fd ?: return
-                
-                // 2. Route to your external XRayCore (already running on :10808)
-                val success = Libv2ray.tunStart(fd, "127.0.0.1:10808")
-                
-                if (success) {
-                    println("✅ Connected to external XRayCore!")
-                } else {
-                    println("❌ Failed to start tun2socks")
-                }
-            }
-            
-            fun stop() {
-                Libv2ray.tunStop()
-                tunInterface?.close()
-            }
-        }
+        ...
         EOF
     
     - name: Upload artifacts
@@ -412,25 +174,7 @@ jobs:
           QUICK_START.kt
         body: |
           ## AndroidLibXrayLite AAR - Android 15+ Compatible
-          
-          ✅ **16KB Page Size Support** (Android 15+ Pixel 9, etc.)
-          ✅ Xray Core + tun2socks in one package
-          ✅ Use embedded core OR connect to external core
-          ✅ SOCKS5 proxy support
-          
-          ### Built With:
-          - NDK r27 (16KB page size support)
-          - Go 1.23
-          - Target API 35
-          
-          ### For Users with External XRayCore:
-          ```kotlin
-          // Just use tun2socks, don't start embedded core
-          Libv2ray.tunStart(tunFd, "127.0.0.1:10808")
-          ```
-          
-          See USAGE_GUIDE.md for complete examples.
-          See ANDROID15_COMPATIBILITY.md for 16KB page size details.
+          ...
         draft: false
         prerelease: false
       env:
@@ -442,21 +186,5 @@ jobs:
         echo "=================================================="
         echo "🚀 ANDROIDLIBXRAYLITE BUILD (16KB PAGE SIZE)"
         echo "=================================================="
-        echo ""
-        echo "✅ What's included:"
-        echo "   - Xray Core (can be used or ignored)"
-        echo "   - tun2socks functionality"
-        echo "   - 16KB page size support (Android 15+)"
-        echo ""
-        echo "✅ Compatible with:"
-        echo "   - Android 5.0+ (API 21+)"
-        echo "   - Android 15+ with 16KB page size"
-        echo "   - All architectures (arm64, arm, x86, x86_64)"
-        echo ""
-        echo "📦 Your use case:"
-        echo "   Use tun2socks → your external XRayCore"
-        echo "   (embedded core will be idle, that's fine)"
-        echo ""
         find build -name "*.aar" -exec ls -lh {} \; || echo "Check artifacts above"
-        echo ""
         echo "=================================================="
