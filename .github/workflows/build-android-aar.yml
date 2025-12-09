@@ -10,11 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/23.1.7779620
       GO_VERSION: 1.21.1
 
     steps:
+      # --- Checkout repo ---
       - name: Checkout repo
         uses: actions/checkout@v4
 
@@ -29,30 +28,44 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@latest
           gomobile init
 
-      # --- Install Android SDK + NDK + CMake ---
-      - name: Install Android SDK/NDK/CMake
+      # --- Install Android SDK Commandline Tools ---
+      - name: Install Android SDK Commandline Tools
         uses: android-actions/setup-android@v3
         with:
           api-level: 33
-          ndk: 23.1.7779620
-          cmake: 3.10.2
           build-tools: 33.0.2
+
+      # --- Install NDK 23.1.7779620 dynamically ---
+      - name: Install Android NDK
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;23.1.7779620"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/23.1.7779620" >> $GITHUB_ENV
+
+      # --- Install CMake 3.10.2 ---
+      - name: Install CMake
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.10.2.4988404"
+          echo "CMAKE_HOME=$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" >> $GITHUB_ENV
 
       # --- Clone tun2socks-android ---
       - name: Clone tun2socks-android
         run: git clone https://github.com/LondonX/tun2socks-android.git
 
+      # --- Configure CMake path for Gradle ---
       - name: Configure local.properties for CMake
-        run: echo "cmake.dir=${ANDROID_SDK_ROOT}/cmake/3.10.2.4988404" >> tun2socks-android/local.properties
+        run: |
+          echo "cmake.dir=$CMAKE_HOME" >> tun2socks-android/local.properties
+          cat tun2socks-android/local.properties
 
-      - name: Make Gradle wrapper executable
+      # --- Make Gradle wrapper executable ---
+      - name: Make gradlew executable
         run: chmod +x tun2socks-android/gradlew
 
       # --- Build Go JNI library (multi-ABI) ---
       - name: Build Go JNI library
         run: |
           cd tun2socks-android
-          # Build universal Android AAR with gomobile
+          # Universal Android AAR
           gomobile bind -target=android -o tun2socks.aar ./mobile
 
       # --- Copy Go AAR into Gradle project ---
@@ -67,8 +80,8 @@ jobs:
         working-directory: tun2socks-android
         run: ./gradlew tun2socks:assembleRelease --stacktrace
 
-      # --- Upload the final AAR ---
-      - name: Upload project-ready AAR artifact
+      # --- Upload the final AAR artifact ---
+      - name: Upload project-ready AAR
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-full-aar
