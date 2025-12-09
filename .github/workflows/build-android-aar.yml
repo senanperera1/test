@@ -40,13 +40,13 @@ jobs:
     - name: Setup Gradle
       uses: gradle/gradle-build-action@v3
     
-    - name: Install gomobile (Latest)
+    - name: Install gomobile
       run: |
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
     
-    - name: Initialize gomobile with NDK r27
+    - name: Initialize gomobile
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
@@ -54,111 +54,70 @@ jobs:
     
     - name: Patch for 16KB Page Size
       run: |
+        # Patch Makefile for API 35
         if [ -f "Makefile" ]; then
-          sed -i 's/-androidapi [0-9]*/-androidapi 35/g' Makefile
-          sed -i 's/-androidapi=[0-9]*/-androidapi=35/g' Makefile
+          sed -i 's/-androidapi [0-9]\+/-androidapi 35/g' Makefile
+          sed -i 's/-androidapi=[0-9]\+/-androidapi=35/g' Makefile
         fi
-        if [ -f "build.gradle" ]; then
-          sed -i 's/compileSdkVersion [0-9]*/compileSdkVersion 35/g' build.gradle
-          sed -i 's/targetSdkVersion [0-9]*/targetSdkVersion 35/g' build.gradle
-          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 21/g' build.gradle
-        fi
+        
+        # Patch build.gradle files
+        find . -name "build.gradle*" -type f -exec sed -i \
+          -e 's/compileSdkVersion [0-9]\+/compileSdkVersion 35/g' \
+          -e 's/targetSdkVersion [0-9]\+/targetSdkVersion 35/g' \
+          -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
+          -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
     
-    - name: Build AAR (with 16KB page size)
+    - name: Build AAR
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
-
+        export GO111MODULE=on
+        
+        # AndroidLibXrayLite uses Makefile
         if [ -f "Makefile" ]; then
-          make lib
-        elif [ -f "build.gradle" ] || [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ] || [ -f "gradlew" ]; then
-          [ -f gradlew ] && chmod +x gradlew || true
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          echo "Building with Makefile..."
+          make lib || make android || make
+        
+        # Fallback to Gradle
+        elif [ -f "build.gradle" ] || [ -f "gradlew" ]; then
+          echo "Building with Gradle..."
+          chmod +x gradlew 2>/dev/null || true
+          ./gradlew assembleRelease || gradle assembleRelease
+        
+        # Last resort: direct gomobile
         else
-          echo "Manual gomobile bind fallback…"
-          if [ -d "Xray-core" ]; then
-            cd Xray-core
-          elif [ -d "xray-core" ]; then
-            cd xray-core
-          elif [ -d "core" ]; then
-            cd core
-          else
-            echo "No core directory found, skipping gomobile bind"
-            SKIP_BIND=1
-          fi
-          if [ -z "${SKIP_BIND}" ]; then
-            if [ -d "infra/control" ] && \
-               grep -R "^[[:space:]]*func[[:space:]]\([A-Z]\)" infra/control >/dev/null 2>&1; then
-              gomobile bind -v \
-                -target=android \
-                -androidapi=35 \
-                -ldflags="-s -w" \
-                -tags="android" \
-                -o libxray.aar \
-                -javapkg=io.github.2dust.AndroidLibXrayLite \
-                ./infra/control
-            else
-              echo "Skipping gomobile bind: infra/control missing or no exported names"
-            fi
-          fi
+          echo "Direct gomobile build..."
+          go mod download
+          gomobile bind -v \
+            -target=android \
+            -androidapi=35 \
+            -ldflags="-s -w" \
+            -o libxray.aar \
+            -javapkg=io.github.androidlibxraylite \
+            .
         fi
-
-        mkdir -p build
-        find . -name "*.aar" -type f -exec cp {} build/ \;
-        if ! ls build/*.aar >/dev/null 2>&1; then
-          echo "❌ No AAR found!"
-          exit 1
-        fi
-        echo "✅ AAR built successfully!"
-        ls -lh build/
     
     - name: Find and verify AAR
       run: |
         echo "=== Searching for AAR files ==="
-        find . -name "*.aar" -type f | while read aar; do
-          echo "Found: $aar"
-          echo "Size: $(du -h "$aar" | cut -f1)"
-          unzip -l "$aar" | grep -i "jni" || echo "No native libs info"
-        done
-        mkdir -p build
-        find . -name "*.aar" -type f -exec cp {} build/ \;
-        if [ ! -f build/*.aar ]; then
+        find . -name "*.aar" -type f
+        
+        mkdir -p build/outputs
+        find . -name "*.aar" -type f -exec cp {} build/outputs/ \;
+        
+        if ! ls build/outputs/*.aar 1> /dev/null 2>&1; then
           echo "❌ No AAR found!"
           exit 1
         fi
+        
         echo "✅ AAR built successfully!"
-        ls -lh build/
-    
-    - name: Create 16KB page size verification doc
-      run: |
-        cat > ANDROID15_COMPATIBILITY.md << 'EOF'
-        # Android 15+ (16KB Page Size) Compatibility
-        ...
-        EOF
-    
-    - name: Create usage guide
-      run: |
-        cat > USAGE_GUIDE.md << 'EOF'
-        # AndroidLibXrayLite Usage Guide
-        ...
-        EOF
-    
-    - name: Create quick start script
-      run: |
-        cat > QUICK_START.kt << 'EOF'
-        // QUICK START: tun2socks to External XRayCore
-        ...
-        EOF
+        ls -lh build/outputs/
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: AndroidLibXrayLite-16kb-compatible
-        path: |
-          build/*.aar
-          USAGE_GUIDE.md
-          ANDROID15_COMPATIBILITY.md
-          QUICK_START.kt
+        path: build/outputs/*.aar
         retention-days: 90
     
     - name: Create Release
@@ -167,24 +126,19 @@ jobs:
       with:
         tag_name: android15-v${{ github.run_number }}
         name: AndroidLibXrayLite (16KB Page Size)
-        files: |
-          build/*.aar
-          USAGE_GUIDE.md
-          ANDROID15_COMPATIBILITY.md
-          QUICK_START.kt
+        files: build/outputs/*.aar
         body: |
-          ## AndroidLibXrayLite AAR - Android 15+ Compatible
-          ...
+          ## AndroidLibXrayLite - Android 15+ Compatible (16KB Page Size)
+          
+          ✅ Xray Core + tun2socks
+          ✅ 16KB page size support
+          ✅ NDK r27, Go 1.23, API 35
+          
+          **Usage with external XRayCore:**
+          ```kotlin
+          Libv2ray.tunStart(tunFd, "127.0.0.1:10808")
+          ```
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Build Summary
-      if: always()
-      run: |
-        echo "=================================================="
-        echo "🚀 ANDROIDLIBXRAYLITE BUILD (16KB PAGE SIZE)"
-        echo "=================================================="
-        find build -name "*.aar" -exec ls -lh {} \; || echo "Check artifacts above"
-        echo "=================================================="
