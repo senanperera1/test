@@ -1,51 +1,72 @@
-name: Build tun2socks AAR
+name: Build Tun2Socks AAR
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build-aar:
+  build:
     runs-on: ubuntu-latest
-
+    
     steps:
-      # 1. Checkout repo
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # 2. Clone tun2socks-android
-      - name: Clone tun2socks-android
-        run: git clone https://github.com/LondonX/tun2socks-android.git
-
-      # 3. Set up JDK 17+
-      - name: Set up JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: temurin
-          java-version: 17
-
-      # 4. Install Android SDK + NDK + CMake
-      - name: Setup Android SDK, NDK, CMake
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 33
-          ndk: 23.1.7779620
-          cmake: 3.10.2
-          build-tools: 33.0.2
-
-      # 5. Make Gradle wrapper executable
-      - name: Make Gradle wrapper executable
-        run: chmod +x tun2socks-android/gradlew
-
-      # 6. Build the release AAR
-      - name: Build tun2socks Release AAR
-        working-directory: tun2socks-android
-        run: ./gradlew tun2socks:assembleRelease --stacktrace
-
-      # 7. Upload the final AAR artifact
-      - name: Upload AAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: tun2socks-aar
-          path: tun2socks-android/tun2socks/build/outputs/aar/*.aar
+    - name: Checkout tun2socks-android repository
+      uses: actions/checkout@v4
+      with:
+        repository: LondonX/tun2socks-android
+        ref: main
+    
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+    
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+    
+    - name: Install Android NDK
+      run: |
+        echo "y" | sdkmanager "ndk;25.2.9519653"
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+    
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+    
+    - name: Build AAR with Gradle
+      run: ./gradlew tun2socks:assembleRelease --stacktrace
+    
+    - name: Find and list AAR files
+      run: |
+        echo "=== AAR Files Found ==="
+        find . -name "*.aar" -type f
+        echo "======================="
+    
+    - name: Upload AAR artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tun2socks-aar
+        path: tun2socks/build/outputs/aar/*.aar
+        if-no-files-found: error
+    
+    - name: Upload native libraries (optional)
+      uses: actions/upload-artifact@v4
+      with:
+        name: tun2socks-native-libs
+        path: tun2socks/build/intermediates/stripped_native_libs/release/out/lib/
+        if-no-files-found: warn
+    
+    - name: Create Release Info
+      run: |
+        echo "Build completed successfully!" > build-info.txt
+        echo "Timestamp: $(date)" >> build-info.txt
+        echo "Commit: ${{ github.sha }}" >> build-info.txt
+        
+    - name: Upload Build Info
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-info
+        path: build-info.txt
