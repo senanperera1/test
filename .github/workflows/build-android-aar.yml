@@ -40,14 +40,15 @@ jobs:
     - name: Setup Gradle
       uses: gradle/gradle-build-action@v3
 
-    - name: Install gomobile tools
+    - name: Install gomobile tools (no vendor mode)
       run: |
+        # Ensure tool install can query proxy
         unset GOFLAGS
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-    - name: Initialize gomobile
+    - name: Initialize gomobile (no vendor mode)
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
@@ -65,8 +66,10 @@ jobs:
           -e 's/compileSdk = [0-9]\+/compileSdk = 35/g' \
           -e 's/targetSdk = [0-9]\+/targetSdk = 35/g' {} \;
 
-    - name: Ensure Go module, pin deps and vendor
+    - name: Clone go-tun2socks v1.16.7 locally and wire replace (no vendor mode)
       run: |
+        git clone --depth 1 --branch v1.16.7 https://github.com/eycorsican/go-tun2socks.git ./third_party/go-tun2socks
+
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
@@ -74,17 +77,15 @@ jobs:
 
         require (
           github.com/eycorsican/go-tun2socks v1.16.7
-          golang.org/x/mobile latest
+          golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
         )
 
-        replace github.com/eycorsican/go-tun2socks => github.com/eycorsican/go-tun2socks v1.16.7
+        replace github.com/eycorsican/go-tun2socks => ./third_party/go-tun2socks
         EOF
 
-        go get golang.org/x/mobile@latest
         go mod tidy
-        go mod vendor
 
-    - name: Add tun2socks exports
+    - name: Add tun2socks exports (using NewTun2Socks signature)
       run: |
         mkdir -p libv2ray
         cat > libv2ray/tun.go <<'EOF'
@@ -103,6 +104,7 @@ jobs:
             Stop()
         }
 
+        // TunStart starts tun2socks with a given TUN file descriptor and SOCKS5 proxy address/port.
         func TunStart(fd int, socksAddr string, port uint16) bool {
             if tunRunning {
                 return true
@@ -119,6 +121,7 @@ jobs:
             return true
         }
 
+        // TunStop stops the tun2socks loop.
         func TunStop() {
             if tunRunning && tun != nil {
                 tun.Stop()
@@ -127,12 +130,12 @@ jobs:
         }
         EOF
 
-    - name: Build AAR
+    - name: Build AAR (no vendor mode; let gomobile resolve x/mobile/bind)
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
         export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
         export GO111MODULE=on
-        export GOFLAGS="-mod=vendor"
+        # IMPORTANT: do NOT set GOFLAGS=-mod=vendor here. gomobile must resolve x/mobile/bind.
 
         gomobile bind -v \
           -target=android \
@@ -175,9 +178,9 @@ jobs:
           ✅ Xray Core + tun2socks
           ✅ TunStart/TunStop exported
           ✅ 16KB page size support
-          ✅ Go 1.25.5 (required by xray-core), NDK r27, API 35
+          ✅ Go 1.25.5, NDK r27, API 35
           
-          **Usage with external XRayCore:**
+          **Usage:**
           ```kotlin
           Libv2ray.TunStart(tunFd, "127.0.0.1", 10808)
           ...
