@@ -11,10 +11,20 @@
 # This workflow clones the repo, sets up all required tools (JDK, Android SDK/NDK, CMake),
 # handles all compatibility issues, and builds the AAR with comprehensive error handling.
 #
+# KEY FIXES IMPLEMENTED:
+# 1. JDK 17 for Android SDK tools (fixes sdkmanager exit code 1 error)
+# 2. JDK 11 for project build (old project compatibility)
+# 3. Android Platform 33 installation (CRITICAL - project requires compileSdkVersion 33)
+# 4. Proper shell script error handling with if-then-else (not broken || && chains)
+# 5. NDK version set in build.gradle (eliminates deprecation warnings)
+# 6. Three-tier build retry mechanism with different flags
+# 7. Environment variables set for all NDK path variants (ANDROID_NDK_HOME, ANDROID_NDK_ROOT, ANDROID_NDK)
+#
 # OUTPUT:
 # - tun2socks-aar: Ready-to-use AAR file with all architectures
 # - tun2socks-native-libs: Native SO libraries for manual integration
 # - build-info: Build details and troubleshooting information
+# - java-sources: Java wrapper classes for Flutter integration
 ################################################################################
 
 name: Build Tun2Socks AAR - Production Ready
@@ -122,14 +132,19 @@ jobs:
         ls -la $ANDROID_SDK_ROOT/ndk/ || echo "NDK directory not found"
         
     ############################################################################
-    # STEP 5: Install CMake
+    # STEP 5: Install CMake and Android Platform 33
     ############################################################################
-    - name: 🔧 Install CMake 3.10.2.4988404
+    - name: 🔧 Install CMake and Android Platform
       run: |
         echo "==================================="
-        echo "Installing CMake 3.10.2"
+        echo "Installing CMake and Android Platform"
         echo "==================================="
         
+        # Install Android Platform 33 (CRITICAL - project requires this!)
+        echo "Installing Android Platform 33..."
+        sdkmanager --install "platforms;android-33"
+        
+        # Install CMake
         if ! sdkmanager --install "cmake;3.10.2.4988404"; then
           echo "Exact CMake version not available, trying alternatives..."
           if ! sdkmanager --install "cmake;3.18.1"; then
@@ -140,13 +155,20 @@ jobs:
         fi
         
         echo ""
-        echo "CMake installation complete"
+        echo "Installation complete"
+        echo "Installed platforms:"
+        ls -la $ANDROID_SDK_ROOT/platforms/ | grep android-33 || echo "WARNING: Platform 33 not found!"
+        echo ""
+        echo "CMake versions:"
         ls -la $ANDROID_SDK_ROOT/cmake/ || echo "CMake directory not found"
         
+    ############################################################################
+    # STEP 6: Verify all installations and set environment variables
+    ############################################################################
     - name: ✅ Verify NDK and CMake installations
       run: |
         echo "==================================="
-        echo "Verifying NDK and CMake"
+        echo "Verifying NDK, CMake, and Platform"
         echo "==================================="
         
         echo "Available NDK versions:"
@@ -156,33 +178,59 @@ jobs:
         echo "Available CMake versions:"
         ls -la $ANDROID_SDK_ROOT/cmake/ 2>/dev/null || echo "No CMake found"
         
+        echo ""
+        echo "Available Android Platforms:"
+        ls -la $ANDROID_SDK_ROOT/platforms/ 2>/dev/null | grep android || echo "No platforms found"
+        
+        # Verify android-33 is installed
+        if [ ! -d "$ANDROID_SDK_ROOT/platforms/android-33" ]; then
+          echo ""
+          echo "ERROR: Android Platform 33 not found!"
+          echo "This is required by the project's compileSdkVersion."
+          echo "Attempting emergency installation..."
+          yes | sdkmanager --licenses || true
+          sdkmanager --install "platforms;android-33" || {
+            echo "Failed to install android-33 platform!"
+            exit 1
+          }
+        else
+          echo ""
+          echo "✅ Android Platform 33 verified"
+        fi
+        
         if [ -d "$ANDROID_SDK_ROOT/ndk/21.4.7075529" ]; then
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> $GITHUB_ENV
-          echo "Using NDK 21.4.7075529"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> $GITHUB_ENV
+          echo "✅ Using NDK 21.4.7075529"
         elif [ -d "$ANDROID_SDK_ROOT/ndk/21.3.6528147" ]; then
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/21.3.6528147" >> $GITHUB_ENV
-          echo "Using NDK 21.3.6528147"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/21.3.6528147" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/21.3.6528147" >> $GITHUB_ENV
+          echo "✅ Using NDK 21.3.6528147"
         else
           NDK_VERSION=$(ls $ANDROID_SDK_ROOT/ndk/ 2>/dev/null | head -1)
           if [ ! -z "$NDK_VERSION" ]; then
             echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> $GITHUB_ENV
-            echo "Using NDK $NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> $GITHUB_ENV
+            echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> $GITHUB_ENV
+            echo "✅ Using NDK $NDK_VERSION"
           else
-            echo "No NDK found!"
+            echo "❌ No NDK found!"
             exit 1
           fi
         fi
         
         if [ -d "$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" ]; then
           echo "CMAKE_DIR=$ANDROID_SDK_ROOT/cmake/3.10.2.4988404" >> $GITHUB_ENV
-          echo "Using CMake 3.10.2.4988404"
+          echo "✅ Using CMake 3.10.2.4988404"
         else
           CMAKE_VERSION=$(ls $ANDROID_SDK_ROOT/cmake/ 2>/dev/null | head -1)
           if [ ! -z "$CMAKE_VERSION" ]; then
             echo "CMAKE_DIR=$ANDROID_SDK_ROOT/cmake/$CMAKE_VERSION" >> $GITHUB_ENV
-            echo "Using CMake $CMAKE_VERSION"
+            echo "✅ Using CMake $CMAKE_VERSION"
           else
-            echo "No CMake found in SDK, will use system CMake"
+            echo "⚠️ No CMake found in SDK, will use system CMake"
           fi
         fi
         
@@ -207,7 +255,7 @@ jobs:
         echo ""
         
     ############################################################################
-    # STEP 7: Create local.properties and fix NDK configuration
+    # STEP 8: Create local.properties and fix NDK configuration
     ############################################################################
     - name: 📝 Create local.properties and fix NDK warnings
       run: |
@@ -273,7 +321,7 @@ jobs:
         echo ""
         
     ############################################################################
-    # STEP 9: Setup Gradle wrapper
+    # STEP 10: Setup Gradle wrapper
     ############################################################################
     - name: 🔄 Verify and update Gradle wrapper
       run: |
@@ -290,7 +338,7 @@ jobs:
         echo "Gradle wrapper is ready"
         
     ############################################################################
-    # STEP 10: Clean build
+    # STEP 11: Clean any previous build artifacts
     ############################################################################
     - name: 🧹 Clean previous build artifacts
       run: |
@@ -308,7 +356,7 @@ jobs:
         echo "Clean complete"
         
     ############################################################################
-    # STEP 11: Test configuration
+    # STEP 12: Test Gradle configuration
     ############################################################################
     - name: 🔍 Test Gradle configuration
       run: |
@@ -330,7 +378,7 @@ jobs:
         echo "Gradle configuration successful"
         
     ############################################################################
-    # STEP 12: Build AAR
+    # STEP 13: Build the AAR file (THE MAIN BUILD STEP)
     ############################################################################
     - name: 🏗️ Build AAR file
       id: build_aar
@@ -395,7 +443,7 @@ jobs:
         exit 1
         
     ############################################################################
-    # STEP 13: Verify build
+    # STEP 14: Verify build output
     ############################################################################
     - name: ✅ Verify AAR file creation
       run: |
@@ -427,7 +475,7 @@ jobs:
         find . -path "*/stripped_native_libs/*/lib/*" -name "*.so" 2>/dev/null | head -20 || echo "No SO files found"
         
     ############################################################################
-    # STEP 14: Create build info
+    # STEP 15: Create comprehensive build information
     ############################################################################
     - name: 📄 Create detailed build information
       run: |
@@ -493,7 +541,7 @@ jobs:
         cat build-info.txt
         
     ############################################################################
-    # STEP 15: Upload AAR
+    # STEP 16: Upload AAR artifact
     ############################################################################
     - name: 📤 Upload AAR artifact
       uses: actions/upload-artifact@v4
@@ -505,7 +553,7 @@ jobs:
         retention-days: 90
         
     ############################################################################
-    # STEP 16: Upload native libraries
+    # STEP 17: Upload native libraries (for manual integration)
     ############################################################################
     - name: 📤 Upload native libraries
       uses: actions/upload-artifact@v4
@@ -516,7 +564,7 @@ jobs:
         retention-days: 90
         
     ############################################################################
-    # STEP 17: Upload build info
+    # STEP 18: Upload build information
     ############################################################################
     - name: 📤 Upload build information
       uses: actions/upload-artifact@v4
@@ -526,7 +574,7 @@ jobs:
         retention-days: 90
         
     ############################################################################
-    # STEP 18: Upload Java sources
+    # STEP 19: Upload Java sources (for Flutter integration)
     ############################################################################
     - name: 📤 Upload Java source for Flutter integration
       uses: actions/upload-artifact@v4
@@ -537,7 +585,7 @@ jobs:
         retention-days: 90
         
     ############################################################################
-    # FINAL: Success summary
+    # STEP 20: Success summary
     ############################################################################
     - name: 🎉 Build Summary
       run: |
