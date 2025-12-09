@@ -1,7 +1,8 @@
-name: Build LondonX tun2socks AAR
+name: Build LondonX tun2socks AAR (robust checkout)
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [ main, master ]
 
@@ -11,30 +12,73 @@ jobs:
     env:
       ANDROID_API_LEVEL: 35
       ANDROID_NDK_VERSION: 27.0.12077973
+      # Change this to the upstream repo you want to build
       UPSTREAM_REPO: LondonX/universal-android-tun2socks
+      UPSTREAM_BRANCH: main
       UPSTREAM_DIR: upstream-tun2socks
 
     steps:
-      - name: Checkout this repository (for workflow files)
+      - name: Checkout this repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Checkout upstream repo (LondonX tun2socks)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.UPSTREAM_REPO }}
-          path: ${{ env.UPSTREAM_DIR }}
-          fetch-depth: 1
+      - name: Show environment and intent
+        run: |
+          echo "UPSTREAM_REPO=${{ env.UPSTREAM_REPO }}"
+          echo "UPSTREAM_BRANCH=${{ env.UPSTREAM_BRANCH }}"
+          echo "UPSTREAM_DIR=${{ env.UPSTREAM_DIR }}"
+
+      - name: Try clone upstream with token if provided
+        id: clone_with_token
+        run: |
+          set -euo pipefail
+          TARGET_DIR="${{ env.UPSTREAM_DIR }}"
+          REPO="${{ env.UPSTREAM_REPO }}"
+          BRANCH="${{ env.UPSTREAM_BRANCH }}"
+
+          # Remove any stale dir
+          rm -rf "$TARGET_DIR"
+
+          if [ -n "${{ secrets.UPSTREAM_PAT }}" ]; then
+            echo "Attempting authenticated clone using UPSTREAM_PAT"
+            git clone --depth 1 --branch "$BRANCH" "https://x-access-token:${{ secrets.UPSTREAM_PAT }}@github.com/${REPO}.git" "$TARGET_DIR" 2>&1 || {
+              echo "Authenticated clone failed"
+              exit 2
+            }
+            echo "Authenticated clone succeeded"
+            echo "clone_method=token" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "No UPSTREAM_PAT secret provided; attempting unauthenticated public clone"
+          git clone --depth 1 --branch "$BRANCH" "https://github.com/${REPO}.git" "$TARGET_DIR" 2>&1 || {
+            echo "Public clone failed"
+            exit 3
+          }
+          echo "Public clone succeeded"
+          echo "clone_method=public" >> $GITHUB_OUTPUT
+
+      - name: Diagnose clone failure and show helpful message
+        if: failure()
+        run: |
+          echo "=== Clone failed. Diagnostics follow ==="
+          echo "Check that UPSTREAM_REPO is correct and that the branch exists."
+          echo "If the upstream repo is private, add a repository secret named UPSTREAM_PAT with a token that has repo read access."
+          echo "UPSTREAM_REPO=${{ env.UPSTREAM_REPO }}"
+          echo "Attempting to list remote repo info via unauthenticated API (may be rate limited):"
+          curl -sS "https://api.github.com/repos/${{ env.UPSTREAM_REPO }}" || true
+          exit 1
 
       - name: Show upstream layout (diagnostic)
+        if: success()
         run: |
           echo "=== upstream repo path: ${{ env.UPSTREAM_DIR }} ==="
           ls -la "${{ env.UPSTREAM_DIR }}" || true
           echo "=== find gradlew and build files ==="
-          find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f \( -name gradlew -o -name settings.gradle -o -name build.gradle -o -name build.gradle.kts \) -print || true
+          find "${{ env.UPSTREAM_DIR }}" -maxdepth 4 -type f \( -name gradlew -o -name settings.gradle -o -name build.gradle -o -name build.gradle.kts \) -print || true
 
-      - name: Set up Java (JDK 17)
+      - name: Set up Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
@@ -59,55 +103,62 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Make upstream gradlew executable (if present)
+      - name: Make upstream gradlew executable if present
         run: |
-          GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 2 -type f -name gradlew | head -n 1 || true)
+          GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 3 -type f -name gradlew | head -n 1 || true)
           if [ -n "$GW" ]; then
             echo "Found gradlew at: $GW"
             chmod +x "$GW"
           else
-            echo "No gradlew found in upstream; will try system gradle if available"
+            echo "No gradlew found in upstream; will try system gradle if build files exist"
           fi
 
-      - name: Build upstream tun2socks (assembleRelease)
+      - name: Build upstream tun2socks using wrapper or system gradle
         run: |
           set -euo pipefail
-          # prefer running wrapper if present
-          GW=$(find "${{ env.UPSTREAM_DIR }}" -maxdepth 2 -type f -name gradlew | head -n 1 || true)
+          UPSTREAM="${{ env.UPSTREAM_DIR }}"
+          # prefer wrapper if present
+          GW=$(find "$UPSTREAM" -maxdepth 3 -type f -name gradlew | head -n 1 || true)
           if [ -n "$GW" ]; then
             GW_DIR=$(dirname "$GW")
             echo "Running gradlew in $GW_DIR"
             pushd "$GW_DIR"
             ./gradlew clean --no-daemon --stacktrace || true
-            # upstream README suggests: ./gradlew tun2socks:assembleRelease
             ./gradlew tun2socks:assembleRelease --no-daemon --stacktrace
             popd
-          else
-            # fallback to system gradle if wrapper missing
-            echo "No gradlew wrapper; attempting system gradle in upstream dir"
-            pushd "${{ env.UPSTREAM_DIR }}"
+            exit 0
+          fi
+
+          # if no wrapper, check for build files and use system gradle
+          BUILD_FILE=$(find "$UPSTREAM" -maxdepth 3 -type f -name 'settings.gradle' -o -name 'build.gradle' | head -n 1 || true)
+          if [ -n "$BUILD_FILE" ]; then
+            BUILD_DIR=$(dirname "$BUILD_FILE")
+            echo "No wrapper found but build files exist in $BUILD_DIR; attempting system gradle"
+            pushd "$BUILD_DIR"
             gradle clean --no-daemon --stacktrace || true
             gradle tun2socks:assembleRelease --no-daemon --stacktrace
             popd
+            exit 0
           fi
 
+          echo "No gradlew and no Gradle build files found in upstream repo. Nothing to build."
+          exit 4
+
       - name: Collect AARs and native libs
+        if: success()
         run: |
           mkdir -p build/outputs
           # Copy any AARs produced anywhere in the upstream tree
           find "${{ env.UPSTREAM_DIR }}" -type f -name "*.aar" -exec cp {} build/outputs/ \; || true
 
           # Per upstream README: copy stripped native libs from tun2socks build output
-          # Typical path: tun2socks/build/intermediates/stripped_native_libs/release/out/lib
           STRIPPED_DIR="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/stripped_native_libs/release/out/lib"
           if [ -d "$STRIPPED_DIR" ]; then
             echo "Copying stripped native libs from $STRIPPED_DIR"
-            # preserve ABI subfolders
             mkdir -p build/outputs/jniLibs
             cp -r "$STRIPPED_DIR"/* build/outputs/jniLibs/ || true
           else
             echo "No stripped native libs found at $STRIPPED_DIR (path may differ)"
-            # try common alternate path
             ALT="${{ env.UPSTREAM_DIR }}/tun2socks/build/intermediates/merged_native_libs/release/out/lib"
             if [ -d "$ALT" ]; then
               echo "Copying native libs from alternate path $ALT"
@@ -123,7 +174,8 @@ jobs:
             find build/outputs/jniLibs -maxdepth 3 -type f -print || true
           fi
 
-      - name: Upload artifacts (AAR and native libs)
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: londonx-tun2socks-artifacts
@@ -132,12 +184,12 @@ jobs:
             build/outputs/jniLibs/**
           retention-days: 90
 
-      - name: Failure debug (only on failure)
+      - name: Failure debug
         if: failure()
         run: |
           echo "=== Upstream dir listing ==="
           ls -la "${{ env.UPSTREAM_DIR }}" || true
           echo "=== Find build.gradle files ==="
           find "${{ env.UPSTREAM_DIR }}" -maxdepth 4 -type f -name 'build.gradle*' -print || true
-          echo "=== Show first 200 lines of tun2socks README (if present) ==="
+          echo "=== Show README head if present ==="
           if [ -f "${{ env.UPSTREAM_DIR }}/README.md" ]; then sed -n '1,200p' "${{ env.UPSTREAM_DIR }}/README.md" || true; else echo "no README.md"; fi
