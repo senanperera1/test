@@ -1,6 +1,9 @@
 name: Build tun2socks AAR (external clone)
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -13,10 +16,7 @@ jobs:
         with:
           java-version: '11'
           distribution: 'temurin'
-          cache: gradle
-
-      - name: Install required packages
-        run: sudo apt-get update
+          # cache removed because we are NOT building this repo
 
       - name: Clone external tun2socks-android repo
         run: |
