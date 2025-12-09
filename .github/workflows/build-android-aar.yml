@@ -1,4 +1,4 @@
-name: Build tun2socks AAR
+name: Build Pure tun2socks AAR (xjasonlyu - No V2Ray)
 
 on:
   workflow_dispatch:
@@ -10,12 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout xxf098/go-tun2socks-build
-      uses: actions/checkout@v4
-      with:
-        repository: 'xxf098/go-tun2socks-build'
-        ref: 'master'
-    
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
@@ -32,7 +26,7 @@ jobs:
     
     - name: Install NDK
       run: |
-        sdkmanager --install "ndk;23.1.7779620" "platforms;android-33"
+        sdkmanager --install "ndk;23.1.7779620"
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/23.1.7779620" >> $GITHUB_ENV
     
     - name: Install gomobile
@@ -42,171 +36,169 @@ jobs:
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
     
     - name: Initialize gomobile
-      run: |
-        gomobile init
+      run: gomobile init
     
-    - name: Download dependencies
+    - name: Create pure tun2socks wrapper (xjasonlyu)
       run: |
-        go get -d ./...
+        mkdir -p pure-tun2socks
+        cd pure-tun2socks
+        
+        # Initialize module
+        go mod init github.com/pure-tun2socks/mobile
+        
+        # Add xjasonlyu/tun2socks (pure, actively maintained, no V2Ray)
+        go get github.com/xjasonlyu/tun2socks/v2@latest
+        
+        # Create simple wrapper
+        cat > tun2socks.go << 'EOF'
+        package tun2socks
+
+        import (
+            "errors"
+            "fmt"
+            "os"
+            
+            "github.com/xjasonlyu/tun2socks/v2/core/device"
+            "github.com/xjasonlyu/tun2socks/v2/core/device/tun"
+            "github.com/xjasonlyu/tun2socks/v2/engine"
+            "github.com/xjasonlyu/tun2socks/v2/proxy"
+        )
+
+        var (
+            running    bool
+            engineKey  *engine.Key
+            tunDevice  device.Device
+        )
+
+        // Start starts pure SOCKS5 forwarding
+        // tunFd: TUN device file descriptor
+        // mtu: MTU size (typically 1500)
+        // socksAddr: SOCKS5 proxy address (e.g., "127.0.0.1:10808")
+        func Start(tunFd int64, mtu int64, socksAddr string) error {
+            if running {
+                return errors.New("already running")
+            }
+
+            // Open TUN device
+            var err error
+            tunDevice, err = tun.Open(int(tunFd), int(mtu))
+            if err != nil {
+                return fmt.Errorf("failed to open TUN: %v", err)
+            }
+
+            // Create SOCKS5 proxy adapter
+            proxyURL := fmt.Sprintf("socks5://%s", socksAddr)
+            proxyAdapter, err := proxy.ParseProxy(proxyURL)
+            if err != nil {
+                return fmt.Errorf("invalid SOCKS5 address: %v", err)
+            }
+
+            // Start engine
+            engineKey = engine.Insert(tunDevice, proxyAdapter)
+            if engineKey == nil {
+                return errors.New("failed to start engine")
+            }
+
+            running = true
+            return nil
+        }
+
+        // Stop stops forwarding
+        func Stop() error {
+            if !running {
+                return errors.New("not running")
+            }
+
+            if engineKey != nil {
+                engine.Remove(engineKey)
+                engineKey = nil
+            }
+            
+            if tunDevice != nil {
+                tunDevice.Close()
+                tunDevice = nil
+            }
+
+            running = false
+            return nil
+        }
+
+        // IsRunning checks if forwarding is active
+        func IsRunning() bool {
+            return running
+        }
+
+        // GetVersion returns version info
+        func GetVersion() string {
+            return "pure-tun2socks-v2.5.2"
+        }
+
+        // SetLogLevel sets log level
+        func SetLogLevel(level string) {
+            os.Setenv("LOG_LEVEL", level)
+        }
+        EOF
+        
+        go mod tidy
     
     - name: Build AAR
       run: |
-        make android
+        cd pure-tun2socks
+        gomobile bind -v -androidapi 21 -target=android/arm,android/arm64,android/amd64 -o tun2socks.aar -javapkg=io.puretun2socks .
     
-    - name: List build outputs
-      run: |
-        echo "=== Build directory contents ==="
-        find . -name "*.aar" -o -name "*.jar" | head -20
-        ls -lah *.aar 2>/dev/null || echo "No AAR in root"
-        ls -lah build/ 2>/dev/null || echo "No build directory"
-    
-    - name: Create usage documentation
+    - name: Create usage doc
       run: |
         cat > USAGE.md << 'EOF'
-        # tun2socks AAR with V2Ray/XRay Support
+        # Pure tun2socks - NO V2Ray/XRay Embedded
 
-        Built from xxf098/go-tun2socks-build - supports V2Ray and XRay cores.
+        Based on xjasonlyu/tun2socks (actively maintained, 2024)
+        Pure SOCKS5 forwarder - NO Vmess bullshit!
 
-        ## Integration
-
-        1. Add to your Android project:
-           ```gradle
-           dependencies {
-               implementation files('libs/tun2socks.aar')
-           }
-           ```
-
-        ## Usage (Kotlin)
+        ## Usage in Android
 
         ```kotlin
-        import tun2socks.Tun2socks
+        import io.puretun2socks.Tun2socks
 
-        class MyVpnService : VpnService() {
-            
-            // Implement required interfaces
-            private val vpnService = object : tun2socks.VpnService {
-                override fun protect(fd: Long): Boolean {
-                    return this@MyVpnService.protect(fd.toInt())
-                }
-            }
-            
-            private val logService = object : tun2socks.LogService {
-                override fun writeLog(log: String?) {
-                    Log.d("Tun2socks", log ?: "")
-                }
-            }
-            
-            private val querySpeed = object : tun2socks.QuerySpeed {
-                override fun updateTraffic(up: Long, down: Long) {
-                    // Update your UI with traffic stats
-                }
-            }
-            
-            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                // Setup VPN interface
-                val builder = Builder()
-                    .setMtu(1500)
-                    .addAddress("10.0.0.2", 24)
-                    .addRoute("0.0.0.0", 0)
-                    .addDnsServer("8.8.8.8")
-                    .setSession("Tun2socks VPN")
-                
-                val vpnInterface = builder.establish() ?: return START_NOT_STICKY
-                val tunFd = vpnInterface.detachFd()
-                
-                // Start with XRay core
-                try {
-                    val vmessConfig = tun2socks.Vmess().apply {
-                        host = "your.server.com"
-                        path = "/path"
-                        tls = "tls"
-                        add = "your.server.com"
-                        port = 443
-                        aid = 0
-                        net = "ws"
-                        id = "your-uuid-here"
-                    }
-                    
-                    Tun2socks.startXRayWithTunFd(
-                        tunFd.toLong(),
-                        vpnService,
-                        logService,
-                        querySpeed,
-                        vmessConfig,
-                        filesDir.absolutePath // asset path
-                    )
-                    
-                    Log.i("VPN", "XRay started successfully")
-                } catch (e: Exception) {
-                    Log.e("VPN", "Failed to start", e)
-                }
-                
-                return START_STICKY
-            }
-            
-            override fun onDestroy() {
-                try {
-                    Tun2socks.stopXRay()
-                } catch (e: Exception) {
-                    Log.e("VPN", "Failed to stop", e)
-                }
-                super.onDestroy()
-            }
-        }
-        ```
+        // In your VPN service
+        val tunFd = vpnInterface.detachFd()
 
-        ## Simple SOCKS5 Usage
-
-        If you just want to use a SOCKS5 proxy (like from XRayCore running separately):
-
-        ```kotlin
-        // Create a simple config
-        val vmessConfig = tun2socks.Vmess().apply {
-            // Configure for socks5 proxy at 127.0.0.1:10808
-            add = "127.0.0.1"
-            port = 10808
-            net = "socks"
-        }
-        
-        Tun2socks.startV2RayWithTunFd(
+        // Start - just pass fd and SOCKS5 address!
+        Tun2socks.start(
             tunFd.toLong(),
-            vpnService,
-            logService,
-            querySpeed,
-            vmessConfig,
-            filesDir.absolutePath
+            1500L,                    // MTU
+            "127.0.0.1:10808"        // Your XrayCore SOCKS5
         )
+
+        // Stop
+        Tun2socks.stop()
+
+        // Check status
+        val running = Tun2socks.isRunning()
         ```
 
-        ## Features
+        ## That's It!
 
-        - ✅ V2Ray core support
-        - ✅ XRay core support  
-        - ✅ VMess, VLESS, Trojan, Shadowsocks protocols
-        - ✅ Traffic statistics
-        - ✅ Works with external XRayCore via SOCKS5
-        - ✅ Full TUN integration
+        No Vmess objects, no JSON configs, just:
+        - Read packets from TUN
+        - Forward to SOCKS5
+        - Your XrayCore handles everything else
 
-        ## Integration with External XRayCore
+        ## Flow
 
-        1. Start your XRayCore with SOCKS5 inbound on `127.0.0.1:10808`
-        2. Use the simple SOCKS5 usage above
-        3. All TUN traffic will be forwarded to your XRayCore
+        ```
+        TUN device → tun2socks → 127.0.0.1:10808 (Your XrayCore) → Internet
+        ```
 
-        ## Notes
-
-        - Remember to call `protect()` on all sockets to avoid routing loops
-        - Implement the `LogService` interface to see debug logs
-        - Implement `QuerySpeed` to monitor traffic
+        Pure and simple! 🚀
         EOF
     
-    - name: Upload AAR artifact
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: tun2socks-aar
+        name: pure-tun2socks-aar
         path: |
-          **/*.aar
-          **/*-sources.jar
+          pure-tun2socks/*.aar
+          pure-tun2socks/*.jar
           USAGE.md
         retention-days: 30
     
@@ -215,35 +207,20 @@ jobs:
       uses: softprops/action-gh-release@v1
       continue-on-error: true
       with:
-        tag_name: build-${{ github.run_number }}
+        tag_name: pure-build-${{ github.run_number }}
         files: |
-          **/*.aar
+          pure-tun2socks/*.aar
           USAGE.md
         body: |
-          ## tun2socks AAR with V2Ray/XRay Support
+          ## Pure tun2socks AAR - NO V2Ray/XRay
           
-          Built from xxf098/go-tun2socks-build
+          Based on xjasonlyu/tun2socks (2024, actively maintained)
           
-          ### Features:
-          - V2Ray and XRay core support
-          - VMess, VLESS, Trojan, Shadowsocks
-          - Works with external XRayCore via SOCKS5
-          - Traffic statistics
+          ### Simple API:
+          ```kotlin
+          Tun2socks.start(tunFd.toLong(), 1500L, "127.0.0.1:10808")
+          ```
           
-          ### Quick Start:
-          See USAGE.md for complete integration guide.
-        draft: false
-        prerelease: false
+          No Vmess, no configs, just pure SOCKS5 forwarding!
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Show success message
-      run: |
-        echo "✅ BUILD SUCCESSFUL!"
-        echo ""
-        echo "Your tun2socks.aar has been built successfully!"
-        echo ""
-        echo "📦 Download it from the 'Artifacts' section above"
-        echo ""
-        echo "Files built:"
-        find . -name "*.aar" -exec ls -lh {} \;
