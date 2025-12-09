@@ -11,14 +11,17 @@
 # This workflow clones the repo, sets up all required tools (JDK, Android SDK/NDK, CMake),
 # handles all compatibility issues, and builds the AAR with comprehensive error handling.
 #
-# KEY FIXES IMPLEMENTED:
+# KEY FIXES IMPLEMENTED (ALL THE ERRORS ENCOUNTERED):
 # 1. JDK 17 for Android SDK tools (fixes sdkmanager exit code 1 error)
 # 2. JDK 11 for project build (old project compatibility)
 # 3. Android Platform 33 installation (CRITICAL - project requires compileSdkVersion 33)
-# 4. Proper shell script error handling with if-then-else (not broken || && chains)
-# 5. NDK version set in build.gradle (eliminates deprecation warnings)
-# 6. Three-tier build retry mechanism with different flags
-# 7. Environment variables set for all NDK path variants (ANDROID_NDK_HOME, ANDROID_NDK_ROOT, ANDROID_NDK)
+# 4. Build Tools 30.0.3 installation (CRITICAL - project requires this exact version)
+# 5. NDK 21.4.7075529 (compatible with old CMake)
+# 6. CMake 3.10.2 (exact version project expects)
+# 7. Proper shell script error handling with if-then-else (not broken || && chains)
+# 8. NDK version set in build.gradle (eliminates deprecation warnings)
+# 9. Three-tier build retry mechanism with different flags
+# 10. Environment variables for all NDK path variants (ANDROID_NDK_HOME, ANDROID_NDK_ROOT, ANDROID_NDK)
 #
 # OUTPUT:
 # - tun2socks-aar: Ready-to-use AAR file with all architectures
@@ -132,17 +135,21 @@ jobs:
         ls -la $ANDROID_SDK_ROOT/ndk/ || echo "NDK directory not found"
         
     ############################################################################
-    # STEP 5: Install CMake and Android Platform 33
+    # STEP 5: Install ALL required Android components
     ############################################################################
-    - name: 🔧 Install CMake and Android Platform
+    - name: 🔧 Install CMake, Platform, and Build Tools
       run: |
         echo "==================================="
-        echo "Installing CMake and Android Platform"
+        echo "Installing Android Components"
         echo "==================================="
         
-        # Install Android Platform 33 (CRITICAL - project requires this!)
+        # Install Android Platform 33 (CRITICAL!)
         echo "Installing Android Platform 33..."
         sdkmanager --install "platforms;android-33"
+        
+        # Install Build Tools 30.0.3 (CRITICAL!)
+        echo "Installing Build Tools 30.0.3..."
+        sdkmanager --install "build-tools;30.0.3"
         
         # Install CMake
         if ! sdkmanager --install "cmake;3.10.2.4988404"; then
@@ -155,9 +162,13 @@ jobs:
         fi
         
         echo ""
-        echo "Installation complete"
+        echo "Installation complete!"
+        echo ""
         echo "Installed platforms:"
         ls -la $ANDROID_SDK_ROOT/platforms/ | grep android-33 || echo "WARNING: Platform 33 not found!"
+        echo ""
+        echo "Installed build-tools:"
+        ls -la $ANDROID_SDK_ROOT/build-tools/ | grep 30.0.3 || echo "WARNING: Build Tools 30.0.3 not found!"
         echo ""
         echo "CMake versions:"
         ls -la $ANDROID_SDK_ROOT/cmake/ || echo "CMake directory not found"
@@ -168,7 +179,7 @@ jobs:
     - name: ✅ Verify NDK and CMake installations
       run: |
         echo "==================================="
-        echo "Verifying NDK, CMake, and Platform"
+        echo "Verifying All Installations"
         echo "==================================="
         
         echo "Available NDK versions:"
@@ -182,11 +193,14 @@ jobs:
         echo "Available Android Platforms:"
         ls -la $ANDROID_SDK_ROOT/platforms/ 2>/dev/null | grep android || echo "No platforms found"
         
+        echo ""
+        echo "Available Build Tools:"
+        ls -la $ANDROID_SDK_ROOT/build-tools/ 2>/dev/null | grep -E "^d" || echo "No build-tools found"
+        
         # Verify android-33 is installed
         if [ ! -d "$ANDROID_SDK_ROOT/platforms/android-33" ]; then
           echo ""
           echo "ERROR: Android Platform 33 not found!"
-          echo "This is required by the project's compileSdkVersion."
           echo "Attempting emergency installation..."
           yes | sdkmanager --licenses || true
           sdkmanager --install "platforms;android-33" || {
@@ -196,6 +210,20 @@ jobs:
         else
           echo ""
           echo "✅ Android Platform 33 verified"
+        fi
+        
+        # Verify build-tools 30.0.3 is installed
+        if [ ! -d "$ANDROID_SDK_ROOT/build-tools/30.0.3" ]; then
+          echo ""
+          echo "ERROR: Build Tools 30.0.3 not found!"
+          echo "Attempting emergency installation..."
+          sdkmanager --install "build-tools;30.0.3" || {
+            echo "Failed to install build-tools 30.0.3!"
+            exit 1
+          }
+        else
+          echo ""
+          echo "✅ Build Tools 30.0.3 verified"
         fi
         
         if [ -d "$ANDROID_SDK_ROOT/ndk/21.4.7075529" ]; then
@@ -233,6 +261,11 @@ jobs:
             echo "⚠️ No CMake found in SDK, will use system CMake"
           fi
         fi
+        
+        echo ""
+        echo "==================================="
+        echo "All required components verified!"
+        echo "==================================="
         
     ############################################################################
     # STEP 6: Switch to JDK 11
