@@ -48,24 +48,27 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x tun2socks-android/gradlew
 
-      # --- Build Go JNI libraries ---
-      - name: Build Go JNI for all ABIs
+      # --- Build Go JNI library (multi-ABI) ---
+      - name: Build Go JNI library
         run: |
           cd tun2socks-android
-          mkdir -p src/main/jniLibs
-          # Build for multiple ABIs
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            mkdir -p src/main/jniLibs/$abi
-            gomobile bind -target=android/$abi -o src/main/jniLibs/$abi/tun2socks.aar ./mobile
-          done
+          # Build universal Android AAR with gomobile
+          gomobile bind -target=android -o tun2socks.aar ./mobile
 
-      # --- Assemble full AAR with Gradle ---
+      # --- Copy Go AAR into Gradle project ---
+      - name: Integrate Go AAR into Gradle
+        run: |
+          cd tun2socks-android
+          mkdir -p tun2socks/src/main/libs
+          cp tun2socks.aar tun2socks/src/main/libs/
+
+      # --- Build final AAR with Gradle ---
       - name: Build Release AAR
         working-directory: tun2socks-android
         run: ./gradlew tun2socks:assembleRelease --stacktrace
 
       # --- Upload the final AAR ---
-      - name: Upload full AAR artifact
+      - name: Upload project-ready AAR artifact
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-full-aar
