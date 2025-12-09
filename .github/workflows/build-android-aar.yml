@@ -1,4 +1,4 @@
-name: Build tun2socks AAR (Xray-only, QUIC disabled)
+name: Build tun2socks AAR
 
 on:
   workflow_dispatch:
@@ -19,8 +19,8 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        # Pin a modern Go; keep consistent across gomobile and core
-        go-version: '1.23.1'
+        # ✅ Xray-core requires Go >= 1.25
+        go-version: '1.25.5'
     
     - name: Set up JDK
       uses: actions/setup-java@v4
@@ -44,130 +44,28 @@ jobs:
     
     - name: Initialize gomobile
       run: gomobile init
-
-    - name: Enforce Xray-core only and disable QUIC
-      shell: bash
+    
+    - name: Download dependencies (Xray-only, QUIC disabled)
       run: |
-        set -eux
-        # Remove any vendored V2Ray-core to avoid duplicate proto registrations
-        rm -rf vendor/github.com/v2fly/v2ray-core || true
+        # Remove v2ray-core to avoid duplicate proto registration
         rm -rf vendor/github.com/v2fly || true
-
-        # Ensure Xray-core is the only core dependency
+        # Force Xray-core only
         go get -u github.com/xtls/xray-core@latest
-
-        # Disable QUIC to avoid qtls.ClientSessionState ABI mismatches
+        go mod tidy
+        # Disable QUIC to avoid qtls panic
         echo 'GOFLAGS=-tags noquic' >> $GITHUB_ENV
         echo 'XRAY_DISABLE_QUIC=1' >> $GITHUB_ENV
-
-        # Optional: ensure modules are tidy
-        go mod tidy
-
-    - name: Build AAR (Xray-only, no QUIC)
+    
+    - name: Build AAR
       env:
         GOFLAGS: ${{ env.GOFLAGS }}
         XRAY_DISABLE_QUIC: ${{ env.XRAY_DISABLE_QUIC }}
-      run: |
-        make android
-
+      run: make android
+    
     - name: List build outputs
       run: |
         echo "=== Build directory contents ==="
         find . -name "*.aar" -o -name "*.jar" | head -20
-        ls -lah *.aar 2>/dev/null || echo "No AAR in root"
-        ls -lah build/ 2>/dev/null || echo "No build directory"
-    
-    - name: Create usage documentation
-      run: |
-        cat > USAGE.md << 'EOF'
-        # tun2socks AAR (Xray-only, QUIC disabled)
-
-        Built from xxf098/go-tun2socks-build with only Xray-core linked and QUIC disabled
-        to prevent qtls.ClientSessionState runtime panics.
-
-        ## Integration
-
-        1. Place the AAR in your Android project's `app/libs/`:
-           ```gradle
-           dependencies {
-             implementation files('libs/tun2socks.aar')
-           }
-           ```
-
-        2. Ensure no other AARs (e.g., libv2ray.aar) are present to avoid duplicate Go cores.
-
-        ## Kotlin usage (freedom outbound, no TLS/QUIC)
-
-        ```kotlin
-        import android.net.VpnService
-        import android.os.ParcelFileDescriptor
-        import android.util.Log
-        import tun2socks.Tun2socks
-        import tun2socks.Vmess
-
-        class MyVpnService : VpnService() {
-          private var tunFd: ParcelFileDescriptor? = null
-
-          private val vpnService = object : tun2socks.VpnService {
-            override fun protect(fd: Long): Boolean = this@MyVpnService.protect(fd.toInt())
-          }
-          private val logService = object : tun2socks.LogService {
-            override fun writeLog(log: String?) { Log.d("Tun2socks", log ?: "") }
-          }
-          private val querySpeed = object : tun2socks.QuerySpeed {
-            override fun updateTraffic(up: Long, down: Long) {
-              Log.d("Tun2socksTraffic", "Up=$up Down=$down")
-            }
-          }
-
-          override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
-            val builder = Builder()
-              .setSession("Tun2socksVPN")
-              .addAddress("10.0.0.2", 32)
-              .addDnsServer("8.8.8.8")
-              .addDnsServer("1.1.1.1")
-              .setMtu(1500)
-              .addRoute("0.0.0.0", 0)
-
-            tunFd = builder.establish() ?: return START_NOT_STICKY
-            val fdInt = tunFd!!.fd
-
-            // Freedom outbound: avoids TLS/QUIC initialization
-            val vmessConfig = Vmess(
-              "", "", "", "127.0.0.1", 0L, 0L,
-              "freedom", "", "", "", byteArrayOf()
-            )
-
-            Thread {
-              try {
-                Tun2socks.startXRayWithTunFd(
-                  fdInt.toLong(),
-                  vpnService,
-                  logService,
-                  querySpeed,
-                  vmessConfig,
-                  filesDir.absolutePath
-                )
-              } catch (e: Exception) {
-                Log.e("Tun2socks", "start error", e)
-              }
-            }.start()
-
-            return START_STICKY
-          }
-
-          override fun onDestroy() {
-            try { Tun2socks.stopXRay() } catch (_: Exception) {}
-            try { tunFd?.close() } catch (_: Exception) {}
-            super.onDestroy()
-          }
-        }
-        ```
-
-        ## Notes
-        - This artifact links only Xray-core and disables QUIC to prevent qtls ABI panics.
-        - Do not include V2Ray-core in the same app; mixing cores causes duplicate protobuf registrations.
-        EOF
     
     - name: Upload AAR artifact
       uses: actions/upload-artifact@v4
@@ -176,7 +74,6 @@ jobs:
         path: |
           **/*.aar
           **/*-sources.jar
-          USAGE.md
         retention-days: 30
     
     - name: Create Release
@@ -187,15 +84,12 @@ jobs:
         tag_name: build-${{ github.run_number }}
         files: |
           **/*.aar
-          USAGE.md
         body: |
           ## tun2socks AAR (Xray-only, QUIC disabled)
           
           - Links only Xray-core
-          - QUIC disabled via build tags to avoid qtls ABI mismatches
-          - Prevents duplicate protobuf registrations and runtime panics
-          
-          See USAGE.md for integration and Kotlin example.
+          - QUIC disabled to avoid qtls ABI mismatch
+          - Prevents duplicate protobuf registrations
         draft: false
         prerelease: false
       env:
