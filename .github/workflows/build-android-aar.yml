@@ -1,4 +1,4 @@
-name: Build tun2socks AAR for Android (Fixed Gradle Cache)
+name: Build tun2socks AAR (FIXED - Minimal Gradle First)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,6 @@ env:
   ANDROID_NDK_VERSION: r26d
   GO_VERSION: '1.22.5'
   TUN2SOCKS_VERSION: v1.1.5
-  TARGET_ARCHS: "arm64-v8a armeabi-v7a x86_64"
 
 jobs:
   build-tun2socks-aar:
@@ -17,10 +16,8 @@ jobs:
     timeout-minutes: 120
     
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: Setup Java 17
       uses: actions/setup-java@v4
@@ -28,140 +25,31 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Create minimal Gradle project FIRST (Fixes cache error)
+    - name: Create COMPLETE Minimal Gradle Project FIRST
       run: |
-        mkdir -p tun2socks-aar/gradle/wrapper
-        cd tun2socks-aar
-        gradle wrapper --gradle-version 8.7 --distribution-type bin --no-daemon
+        # Create FULL minimal Android library structure
+        mkdir -p tun2socks-aar/{gradle/wrapper,app/src/main/{java/com/tun2socks/wrapper,jniLibs/{arm64-v8a,armeabi-v7a,x86_64},cpp,res/values}}
         
-        # Create empty gradle.properties
-        cat > gradle.properties << 'EOF'
-        org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError
-        org.gradle.parallel=true
-        org.gradle.caching=true
-        android.useAndroidX=true
-        android.enableJetifier=true
+        # CRITICAL: settings.gradle FIRST
+        cat > tun2socks-aar/settings.gradle << 'EOF'
+        rootProject.name = 'tun2socks-aar'
+        include ':app'
         EOF
-
-    - name: Cache Gradle (Now finds wrapper files)
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-          tun2socks-aar/gradle/wrapper
-          tun2socks-aar/.gradle
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties', '**/build.gradle') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
-
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-
-    - name: Accept Android SDK licenses
-      run: |
-        yes | sdkmanager --licenses >/dev/null
-        sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
-    - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
-      run: |
-        sdkmanager "ndk;${{ env.ANDROID_NDK_VERSION }}"
-        echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
-        echo "${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
-
-    - name: Setup Go ${{ env.GO_VERSION }}
-      uses: actions/setup-go@v5
-      with:
-        go-version: ${{ env.GO_VERSION }}
-
-    - name: Set build environment (Disable QUIC)
-      run: |
-        echo "CGO_ENABLED=1" >> $GITHUB_ENV
-        echo "CGO_CFLAGS=-O3 -DNDEBUG -fPIC" >> $GITHUB_ENV
-        echo "CGO_LDFLAGS=-O3 -DNDEBUG -Wl,--no-undefined -Wl,--gc-sections" >> $GITHUB_ENV
-        echo "GOFLAGS=-buildmode=pie -ldflags=-s -w -extldflags=-static" >> $GITHUB_ENV
-        echo "GO111MODULE=on" >> $GITHUB_ENV
-        echo "GODEBUG=netdns=go" >> $GITHUB_ENV
-        echo "NO_QUIC=1" >> $GITHUB_ENV
-        echo "DISABLE_QUIC=1" >> $GITHUB_ENV
-
-    - name: Clone xjasonlyu/tun2socks (Active fork)
-      run: |
-        git clone --depth 1 --recursive https://github.com/xjasonlyu/tun2socks.git
-        cd tun2socks && git checkout ${{ env.TUN2SOCKS_VERSION }} || git checkout main
-
-    - name: Setup Android project structure
-      run: |
-        mkdir -p tun2socks-aar/app/src/main/{java/com/tun2socks/wrapper, cpp, res/values, assets}
         
-        # AndroidManifest.xml
-        cat > tun2socks-aar/app/src/main/AndroidManifest.xml << 'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-            package="com.tun2socks.wrapper">
-            <uses-permission android:name="android.permission.INTERNET" />
-            <application/>
-        </manifest>
-        EOF
-
-        # strings.xml
-        cat > tun2socks-aar/app/src/main/res/values/strings.xml << 'EOF'
-        <resources><string name="app_name">tun2socks</string></resources>
-        EOF
-
-    - name: Create JNI headers and wrapper
-      run: |
-        # JNI Header
-        cat > tun2socks-aar/app/src/main/cpp/tun2socks.h << 'EOF'
-        #include <jni.h>
-        JNIEXPORT jboolean JNICALL Java_com_tun2socks_wrapper_Tun2socksWrapper_init(
-            JNIEnv*, jobject, jint, jstring, jint);
-        JNIEXPORT void JNICALL Java_com_tun2socks_wrapper_Tun2socksWrapper_stop(JNIEnv*, jobject);
-        EOF
-
-        # Java class
-        cat > tun2socks-aar/app/src/main/java/com/tun2socks/wrapper/Tun2socksWrapper.java << 'EOF'
-        package com.tun2socks.wrapper;
-        public class Tun2socksWrapper {
-            static { System.loadLibrary("tun2socks"); }
-            public native boolean init(int fd, String ip, int port);
-            public native void stop();
-        }
-        EOF
-
-    - name: Build tun2socks Go static libs (Multi-ABI)
-      run: |
-        cd tun2socks
-        for ABI in arm64-v8a armeabi-v7a x86_64; do
-          echo "=== Building $ABI ==="
-          case $ABI in
-            arm64-v8a)
-              GOARCH=arm64 GOOS=android CC=${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang \
-              go build -buildmode=c-archive -o tun2socks-${ABI}.a ./cmd/tun2socks
-              ;;
-            armeabi-v7a)
-              GOARCH=arm GOARM=7 GOOS=android CC=${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi34-clang \
-              go build -buildmode=c-archive -o tun2socks-${ABI}.a ./cmd/tun2socks
-              ;;
-            x86_64)
-              GOARCH=amd64 GOOS=android CC=${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang \
-              go build -buildmode=c-archive -o tun2socks-${ABI}.a ./cmd/tun2socks
-              ;;
-          esac
-          mkdir -p ../tun2socks-aar/app/src/main/jniLibs/$ABI
-          mv tun2socks-${ABI}.a ../tun2socks-aar/app/src/main/jniLibs/$ABI/
-        done
-
-    - name: Create build.gradle files
-      run: |
         # Root build.gradle
         cat > tun2socks-aar/build.gradle << 'EOF'
+        buildscript {
+            repositories { google() mavenCentral() }
+            dependencies {
+                classpath 'com.android.tools.build:gradle:8.2.2'
+            }
+        }
         allprojects {
-            repositories { google() mavenCentral() gradlePluginPortal() }
+            repositories { google() mavenCentral() }
         }
         EOF
-
-        # App build.gradle (AAR library)
+        
+        # App build.gradle (minimal)
         cat > tun2socks-aar/app/build.gradle << 'EOF'
         plugins { id 'com.android.library' }
         android {
@@ -172,39 +60,129 @@ jobs:
                 ndk { abiFilters 'arm64-v8a','armeabi-v7a','x86_64' }
             }
             buildTypes { release { minifyEnabled false } }
-            externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt' } }
+        }
+        EOF
+        
+        # AndroidManifest.xml
+        cat > tun2socks-aar/app/src/main/AndroidManifest.xml << 'EOF'
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+            package="com.tun2socks.wrapper">
+            <application/>
+        </manifest>
+        EOF
+        
+        # strings.xml
+        cat > tun2socks-aar/app/src/main/res/values/strings.xml << 'EOF'
+        <resources><string name="app_name">tun2socks</string></resources>
+        EOF
+        
+        # Java wrapper
+        cat > tun2socks-aar/app/src/main/java/com/tun2socks/wrapper/Tun2socksWrapper.java << 'EOF'
+        package com.tun2socks.wrapper;
+        public class Tun2socksWrapper {
+            static { System.loadLibrary("tun2socks"); }
+            public native boolean init(int fd, String ip, int port);
+            public native void stop();
         }
         EOF
 
-        # CMakeLists.txt (Minimal JNI wrapper)
+    - name: Generate Gradle Wrapper (NOW WORKS)
+      run: |
+        cd tun2socks-aar
+        gradle wrapper --gradle-version 8.7 --distribution-type all
+
+    - name: Cache Gradle
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          tun2socks-aar/gradle/wrapper
+          tun2socks-aar/.gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('tun2socks-aar/**/build.gradle', 'tun2socks-aar/settings.gradle', 'tun2socks-aar/gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: ${{ runner.os }}-gradle-
+
+    - name: Setup Android SDK + NDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install NDK and accept licenses
+      run: |
+        yes | sdkmanager --licenses
+        sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        sdkmanager "ndk;${{ env.ANDROID_NDK_VERSION }}"
+        echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
+        echo "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+    - name: Setup Go ${{ env.GO_VERSION }}
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Build tun2socks Go static libs (All ABIs)
+      run: |
+        git clone --depth 1 --recursive https://github.com/xjasonlyu/tun2socks.git
+        cd tun2socks
+        
+        # Disable QUIC
+        export CGO_ENABLED=1
+        export NO_QUIC=1
+        export DISABLE_QUIC=1
+        
+        for ABI in arm64-v8a armeabi-v7a x86_64; do
+          echo "Building $ABI..."
+          case $ABI in
+            arm64-v8a)
+              CC="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang" \
+              GOOS=android GOARCH=arm64 go build -buildmode=c-archive -ldflags="-s -w" -o ../tun2socks-aar/app/src/main/jniLibs/$ABI/libtun2socks.a ./cmd/tun2socks
+              ;;
+            armeabi-v7a)
+              CC="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi34-clang" \
+              GOOS=android GOARCH=arm GOARM=7 go build -buildmode=c-archive -ldflags="-s -w" -o ../tun2socks-aar/app/src/main/jniLibs/$ABI/libtun2socks.a ./cmd/tun2socks
+              ;;
+            x86_64)
+              CC="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang" \
+              GOOS=android GOARCH=amd64 go build -buildmode=c-archive -ldflags="-s -w" -o ../tun2socks-aar/app/src/main/jniLibs/$ABI/libtun2socks.a ./cmd/tun2socks
+              ;;
+          esac
+        done
+
+    - name: Add JNI Wrapper (CMake)
+      run: |
         cat > tun2socks-aar/app/src/main/cpp/CMakeLists.txt << 'EOF'
         cmake_minimum_required(VERSION 3.22)
-        project(tun2socks)
         add_library(tun2socks SHARED tun2socks_wrapper.cpp)
         target_link_libraries(tun2socks log android)
+        set_target_properties(tun2socks PROPERTIES POSITION_INDEPENDENT_CODE ON)
         EOF
-
-        # JNI C++ wrapper (links Go static libs)
+        
         cat > tun2socks-aar/app/src/main/cpp/tun2socks_wrapper.cpp << 'EOF'
-        #include "tun2socks.h"
+        #include <jni.h>
         #include <android/log.h>
-        extern "C" JNIEXPORT jboolean JNICALL Java_com_tun2socks_wrapper_Tun2socksWrapper_init(
-            JNIEnv*, jobject, jint fd, jstring ip, jint port) {
-            __android_log_print(ANDROID_LOG_INFO, "Tun2socks", "Init fd=%d", fd);
+        extern "C" JNIEXPORT jboolean JNICALL
+        Java_com_tun2socks_wrapper_Tun2socksWrapper_init(JNIEnv*, jobject, jint, jstring, jint) {
+            __android_log_print(ANDROID_LOG_INFO, "Tun2socks", "Init called");
             return JNI_TRUE;
         }
         JNIEXPORT void JNICALL Java_com_tun2socks_wrapper_Tun2socksWrapper_stop(JNIEnv*, jobject) {}
         EOF
 
+        # Update app/build.gradle for CMake
+        cat >> tun2socks-aar/app/build.gradle << 'EOF'
+        
+        android {
+            externalNativeBuild {
+                cmake { path "src/main/cpp/CMakeLists.txt" }
+            }
+        }
+        EOF
+
     - name: Build AAR
       run: |
         cd tun2socks-aar
-        ./gradlew clean assembleRelease --stacktrace --info
-        ls -la app/build/outputs/aar/
+        ./gradlew clean assembleRelease --stacktrace
 
-    - name: Upload AAR artifact
+    - name: Upload AAR
       uses: actions/upload-artifact@v4
       with:
         name: tun2socks-aar-v${{ env.TUN2SOCKS_VERSION }}
-        path: tun2socks-aar/app/build/outputs/aar/*.aar
-        retention-days: 30
+        path: tun2socks-aar/app/build/outputs/aar/
