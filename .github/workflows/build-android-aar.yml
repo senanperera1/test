@@ -10,13 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GO111MODULE: on
-      GOFLAGS: ""
 
     steps:
-    - name:  Checkout repo
+    - name: Checkout repo
       uses: actions/checkout@v4
-      with:
-        submodules: recursive
 
     - name: Setup Go 1.25.5
       uses: actions/setup-go@v5
@@ -37,159 +34,213 @@ jobs:
 
     - name: Install gomobile
       run: |
-        unset GOFLAGS
         go install golang.org/x/mobile/cmd/gomobile@latest
         go install golang.org/x/mobile/cmd/gobind@latest
         echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
     - name: Create directory structure
       run: |
-        mkdir -p libv2ray
+        mkdir -p xray
         mkdir -p build/outputs
 
-    - name: Create libv2ray. go with all capabilities
+    - name: Create main Go file
       run: |
-        cat > libv2ray/libv2ray.go <<'EOF'
-        package libv2ray
+        cat > main.go <<'EOF'
+        package main
+
+        import "C"
 
         import (
+          "encoding/json"
           "fmt"
           "sync"
-          "encoding/json"
+          "xray/xraylib"
         )
-
-        type Config struct {
-          Log interface{} `json:"log"`
-          Inbound interface{} `json:"inbound"`
-          Outbound interface{} `json:"outbound"`
-          Routing interface{} `json:"routing"`
-        }
 
         var (
-          running  bool
-          mu       sync. Mutex
-          configStr string
+          xrayInstance *xraylib.XrayCore
+          mu           sync. Mutex
         )
 
-        // StartXray starts the Xray instance with the given config
-        func StartXray(configContent string) (string, error) {
-          mu.Lock()
+        //export StartXray
+        func StartXray(configJSON *C.char) *C.char {
+          mu. Lock()
           defer mu. Unlock()
 
-          if running {
-            return "Xray already running", nil
+          configStr := C.GoString(configJSON)
+          
+          if xrayInstance != nil && xrayInstance.Running {
+            return C.CString("Xray already running")
           }
 
-          // Validate JSON config
-          var config Config
-          err := json.Unmarshal([]byte(configContent), &config)
+          var config map[string]interface{}
+          err := json.Unmarshal([]byte(configStr), &config)
           if err != nil {
-            return "", fmt.Errorf("failed to parse config: %v", err)
+            return C.CString(fmt.Sprintf("Config parse error: %v", err))
           }
 
-          configStr = configContent
-          running = true
-          return "Xray started successfully", nil
+          xrayInstance = &xraylib.XrayCore{
+            Running: true,
+            Config:  configStr,
+          }
+
+          return C.CString("Xray started successfully")
         }
 
-        // StopXray stops the running Xray instance
-        func StopXray() (string, error) {
-          mu.Lock()
+        //export StopXray
+        func StopXray() *C.char {
+          mu. Lock()
           defer mu. Unlock()
 
-          if !running {
-            return "Xray not running", nil
+          if xrayInstance == nil || !xrayInstance.Running {
+            return C.CString("Xray not running")
           }
 
-          running = false
-          configStr = ""
-          return "Xray stopped successfully", nil
+          xrayInstance.Running = false
+          xrayInstance.Config = ""
+
+          return C.CString("Xray stopped successfully")
         }
 
-        // IsRunning returns the current running status
-        func IsRunning() bool {
-          mu.Lock()
-          defer mu.Unlock()
-          return running
-        }
-
-        // GetStatus returns detailed status information
-        func GetStatus() string {
+        //export IsRunning
+        func IsRunning() C.int {
           mu.Lock()
           defer mu.Unlock()
 
-          if running {
-            return "Xray is running"
+          if xrayInstance != nil && xrayInstance.Running {
+            return 1
           }
-          return "Xray is stopped"
+          return 0
         }
 
-        // RestartXray restarts the Xray instance
-        func RestartXray(configContent string) (string, error) {
-          mu.Lock()
-          defer mu.Unlock()
+        //export GetStatus
+        func GetStatus() *C.char {
+          mu. Lock()
+          defer mu. Unlock()
 
-          if running {
-            running = false
+          if xrayInstance != nil && xrayInstance.Running {
+            return C.CString("Xray is running")
           }
+          return C.CString("Xray is stopped")
+        }
 
-          var config Config
-          err := json. Unmarshal([]byte(configContent), &config)
+        //export RestartXray
+        func RestartXray(configJSON *C.char) *C.char {
+          mu. Lock()
+          defer mu. Unlock()
+
+          configStr := C.GoString(configJSON)
+          
+          var config map[string]interface{}
+          err := json.Unmarshal([]byte(configStr), &config)
           if err != nil {
-            return "", fmt.Errorf("failed to parse config: %v", err)
+            return C.CString(fmt.Sprintf("Config parse error: %v", err))
           }
 
-          configStr = configContent
-          running = true
-          return "Xray restarted successfully", nil
+          xrayInstance = &xraylib.XrayCore{
+            Running: true,
+            Config:  configStr,
+          }
+
+          return C.CString("Xray restarted successfully")
         }
 
-        // SetupTun2Socks configures tun2socks with the given parameters
-        func SetupTun2Socks(tunIP string, tunGW string, tunMask string, dnsServer string) (string, error) {
+        //export SetupTun2Socks
+        func SetupTun2Socks(tunIP, tunGW, tunMask, dnsServer *C.char) *C.char {
+          mu.Lock()
+          defer mu.Unlock()
+
+          if xrayInstance == nil || !xrayInstance.Running {
+            return C.CString("Error: Xray must be running first")
+          }
+
+          ip := C.GoString(tunIP)
+          gw := C.GoString(tunGW)
+          mask := C.GoString(tunMask)
+          dns := C.GoString(dnsServer)
+
+          result := fmt.Sprintf("Tun2Socks configured: IP=%s, GW=%s, Mask=%s, DNS=%s", ip, gw, mask, dns)
+          return C.CString(result)
+        }
+
+        //export QueryStats
+        func QueryStats(pattern *C.char) *C.char {
           mu.Lock()
           defer mu. Unlock()
 
-          if !running {
-            return "", fmt. Errorf("Xray must be running before setting up tun2socks")
+          if xrayInstance == nil || !xrayInstance.Running {
+            return C. CString("Error: Xray is not running")
           }
-          return fmt.Sprintf("Tun2Socks configured: IP=%s, GW=%s, Mask=%s, DNS=%s", tunIP, tunGW, tunMask, dnsServer), nil
+
+          pat := C.GoString(pattern)
+          return C.CString(fmt. Sprintf("Stats for pattern: %s", pat))
         }
 
-        // QueryStats returns traffic statistics
-        func QueryStats(pattern string, reset bool) (string, error) {
-          mu.Lock()
-          defer mu. Unlock()
+        //export GetVersion
+        func GetVersion() *C.char {
+          return C.CString("AndroidLibXrayLite 1.0.0")
+        }
 
-          if !running {
-            return "", fmt.Errorf("Xray is not running")
+        //export GetConfig
+        func GetConfig() *C.char {
+          mu.Lock()
+          defer mu.Unlock()
+
+          if xrayInstance != nil {
+            return C.CString(xrayInstance.Config)
           }
-          return fmt.Sprintf("Stats for pattern: %s", pattern), nil
+          return C.CString("")
         }
 
-        // GetVersion returns the version
-        func GetVersion() string {
-          return "AndroidLibXrayLite 1.0.0"
+        func main() {}
+        EOF
+
+    - name: Create xray package
+      run: |
+        cat > xray/xraylib. go <<'EOF'
+        package xraylib
+
+        type XrayCore struct {
+          Running bool
+          Config  string
         }
 
-        // GetConfig returns the current config
-        func GetConfig() string {
-          mu.Lock()
-          defer mu. Unlock()
-          return configStr
+        func NewXrayCore() *XrayCore {
+          return &XrayCore{
+            Running: false,
+            Config:  "",
+          }
+        }
+
+        func (x *XrayCore) Start(config string) error {
+          x.Running = true
+          x.Config = config
+          return nil
+        }
+
+        func (x *XrayCore) Stop() error {
+          x.Running = false
+          x.Config = ""
+          return nil
         }
         EOF
 
-    - name: Create go. mod
+    - name: Create go.mod
       run: |
         cat > go.mod <<'EOF'
         module github.com/2dust/AndroidLibXrayLite
 
         go 1.25
+
+        require (
+          golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
+        )
         EOF
 
-    - name: Create go.sum
+    - name: Download dependencies
       run: |
-        touch go.sum
+        go mod download
+        go mod tidy
 
     - name: Initialize gomobile
       run: |
@@ -199,11 +250,11 @@ jobs:
     - name: Build AAR with gomobile bind
       run: |
         export PATH="$(go env GOPATH)/bin:$PATH"
+        export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
         gomobile bind -v \
           -target=android \
           -androidapi=35 \
-          -o build/outputs/AndroidLibXrayLite. aar \
-          ./libv2ray
+          -o build/outputs/AndroidLibXrayLite.aar
 
     - name: List build outputs
       if: success()
