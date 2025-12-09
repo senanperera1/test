@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Set up JDK 11
+      - name: Set up JDK 17 (required by sdkmanager)
         uses: actions/setup-java@v3
         with:
-          java-version: '11'
+          java-version: '17'
           distribution: 'temurin'
 
       - name: Install Android SDK tools
@@ -27,7 +27,7 @@ jobs:
       - name: Clone tun2socks-android repository
         run: git clone https://github.com/LondonX/tun2socks-android.git
 
-      - name: Configure CMake version for Gradle
+      - name: Configure correct CMake version
         run: |
           echo "cmake.dir=/usr/local/lib/android/sdk/cmake/3.10.2.4988404" >> tun2socks-android/local.properties
           cat tun2socks-android/local.properties
@@ -39,7 +39,7 @@ jobs:
         working-directory: tun2socks-android
         run: ./gradlew tun2socks:assembleRelease --stacktrace
 
-      - name: Upload built AAR
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: tun2socks-aar
